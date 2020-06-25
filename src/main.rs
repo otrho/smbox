@@ -1,3 +1,5 @@
+use std::io::BufRead;
+
 // -------------------------------------------------------------------------------------------------
 // [X] Find mbox.
 // [ ] Read all lines.
@@ -13,25 +15,39 @@
 // -------------------------------------------------------------------------------------------------
 
 fn main() {
-    let exit_code = match smbox() {
+    std::process::exit(match smbox() {
         Ok(_) => 0,
         Err(err) => {
             println!("{}", err);
             1
         }
-    };
-    std::process::exit(exit_code)
+    });
 }
 
-fn smbox() -> Result<(), std::io::Error> {
-    let mail_path = get_mbox_path()?;
-    println!("mbox is at '{}'", mail_path);
+fn smbox() -> std::io::Result<()> {
+    // Read lines as a vector of strings from the mbox path found in $MAIL.
+    let lines = read_lines(get_mbox_path()?)?;
+    if lines.is_empty() {
+        println!("No mail.");
+    }
+
     Ok(())
 }
 
 // -------------------------------------------------------------------------------------------------
 
-fn get_mbox_path() -> Result<String, std::io::Error> {
+fn read_lines(path: String) -> std::io::Result<Vec<String>> {
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut lines = Vec::<String>::new();
+    for line in reader.lines() {
+        lines.push(line?);
+    }
+    Ok(lines)
+}
+
+// -------------------------------------------------------------------------------------------------
+
+fn get_mbox_path() -> std::io::Result<String> {
     match std::env::vars_os().find(|(key, _)| key == "MAIL") {
         None => Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
