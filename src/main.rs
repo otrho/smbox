@@ -8,8 +8,8 @@ use std::io::BufRead;
 //     [X] Useful headers, especially 'Subject:'.
 //     [X] Body.
 // [ ] UI:
-//     [ ] Message selector, headers summary.
-//     [ ] Show messages (via pager?)
+//     [X] Message selector, headers summary.
+//     [X] Show messages (via pager?)
 //     [ ] Colours.
 //     [ ] Delete.
 //
@@ -75,9 +75,17 @@ fn run_event_loop(lines: Vec<String>, messages: Vec<Message>) -> std::io::Result
         match inp? {
             termion::event::Key::Char('q') => break,
             termion::event::Key::Char('j') => {
-                msg_idx = std::cmp::min(msg_idx + 1, messages.len() as i64 - 1)
+                msg_idx = std::cmp::min(msg_idx + 1, messages.len() as i64 - 1);
+                page_idx = 0;
             }
-            termion::event::Key::Char('k') => msg_idx = std::cmp::max(msg_idx - 1, 0),
+            termion::event::Key::Char('k') => {
+                msg_idx = std::cmp::max(msg_idx - 1, 0);
+                page_idx = 0;
+            }
+            termion::event::Key::Char(' ') | termion::event::Key::Char('f') => {
+                page_idx = page_idx + 1
+            }
+            termion::event::Key::Char('b') => page_idx = std::cmp::max(page_idx - 1, 0),
             _ => {}
         }
         update_ui(&lines, &messages, &mut stdout, msg_idx, page_idx)?;
@@ -137,12 +145,19 @@ where
     }
 
     // Write the message.  We start them from a 1 line gap after the summary.
-    let top_message_line_offs = num_summary_lines;
+    let top_message_line_offs = num_summary_lines + 1;
     let num_message_lines = height as i64 - top_message_line_offs;
     let message = &messages[message_idx as usize];
+    let top_message_line_idx = std::cmp::max(
+        message.body_idx,
+        std::cmp::min(
+            message.body_idx + page_idx * num_message_lines,
+            message.end_idx - num_message_lines,
+        ),
+    );
     for idx in 0..num_message_lines {
-        if idx < message.end_idx - message.body_idx {
-            let message_line = &lines[(message.body_idx + idx) as usize];
+        if top_message_line_idx + idx < message.end_idx {
+            let message_line = &lines[(top_message_line_idx + idx) as usize];
             let message_line = &message_line[..std::cmp::min(message_line.len(), width as usize)];
             write!(
                 stdout,
@@ -248,7 +263,9 @@ fn parse_mbox(lines: &Vec<String>) -> Vec<Message> {
         } else if line.is_empty() {
             updater.update_last_message(|msg| {
                 if msg.body_idx == 0 {
-                    msg.body_idx = idx
+                    // The body index points to the first line after the empty line which separates
+                    // the headers from the body.
+                    msg.body_idx = idx + 1
                 }
             });
         }
