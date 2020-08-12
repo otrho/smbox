@@ -3,15 +3,23 @@ use std::io::BufRead;
 // -------------------------------------------------------------------------------------------------
 // [X] Find mbox.
 // [X] Read all lines.
-// [ ] Divide into messages:
+// [X] Divide into messages:
 //     [X] '^From' divider.
 //     [X] Useful headers, especially 'Subject:'.
 //     [X] Body.
 // [ ] UI:
 //     [X] Message selector, headers summary.
-//     [X] Show messages (via pager?)
-//     [ ] Colours.
+//     [X] Show messages.
+//     [ ] Improved selector info (date, from, subject, etc.)
+//     [ ] Show headers in pager.
+//     [ ] Colours:
+//         [ ] For message selector.
+//         [ ] Today's mail highlighted.
+//         [ ] Divider, with n/m shown.
+//         [ ] Deleted messages grey in summary.
 //     [ ] Delete.
+//     [ ] Highlight filters.
+//     [ ] Show all headers toggle.
 //
 // Keys:
 //   Selector:
@@ -52,7 +60,7 @@ fn smbox() -> std::io::Result<()> {
         run_event_loop(lines, messages)?;
     }
 
-    println!("");
+    println!();
     Ok(())
 }
 
@@ -63,118 +71,23 @@ use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 
 fn run_event_loop(lines: Vec<String>, messages: Vec<Message>) -> std::io::Result<()> {
-    let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().into_raw_mode()?;
-    write!(stdout, "{}", termion::cursor::Hide)?;
+    let mut tui = MessagesModel::new(lines, messages, &mut stdout);
+    tui.show()?;
 
-    let mut msg_idx = 0;
-    let mut page_idx = 0;
-    update_ui(&lines, &messages, &mut stdout, msg_idx, page_idx)?;
-
+    let stdin = std::io::stdin();
     for inp in stdin.keys() {
         match inp? {
             termion::event::Key::Char('q') => break,
-            termion::event::Key::Char('j') => {
-                msg_idx = std::cmp::min(msg_idx + 1, messages.len() as i64 - 1);
-                page_idx = 0;
-            }
-            termion::event::Key::Char('k') => {
-                msg_idx = std::cmp::max(msg_idx - 1, 0);
-                page_idx = 0;
-            }
-            termion::event::Key::Char(' ') | termion::event::Key::Char('f') => {
-                page_idx = page_idx + 1
-            }
-            termion::event::Key::Char('b') => page_idx = std::cmp::max(page_idx - 1, 0),
+            termion::event::Key::Char('j') => tui.increment_selected(),
+            termion::event::Key::Char('k') => tui.decrement_selected(),
+            termion::event::Key::Char(' ') | termion::event::Key::Char('f') => tui.page_view_down()?,
+            termion::event::Key::Char('b') => tui.page_view_up()?,
             _ => {}
         }
-        update_ui(&lines, &messages, &mut stdout, msg_idx, page_idx)?;
+        tui.show()?;
     }
-    write!(stdout, "{}", termion::cursor::Show)
-}
-
-// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-
-const MAX_SUMMARY_LINES: i64 = 8;
-const MIN_MESSAGE_LINES: i64 = 8;
-
-fn update_ui<T>(
-    lines: &Vec<String>,
-    messages: &Vec<Message>,
-    stdout: &mut termion::raw::RawTerminal<T>,
-    message_idx: i64,
-    page_idx: i64,
-) -> std::io::Result<()>
-where
-    T: std::io::Write,
-{
-    // Clear the screen.
-    write!(stdout, "{}", termion::clear::All)?;
-
-    let (width, height) = termion::terminal_size()?;
-    if (height as i64) < MIN_MESSAGE_LINES + 2 {
-        // This is a non-fatal error.
-        write!(stdout, "Terminal size is too small.")?;
-        return Ok(());
-    }
-
-    // Work out how big the message summary list is.
-    let num_summary_lines = std::cmp::min(messages.len() as i64, MAX_SUMMARY_LINES);
-    let top_summary_idx = if message_idx < num_summary_lines {
-        0
-    } else {
-        std::cmp::min(message_idx, messages.len() as i64 - MAX_SUMMARY_LINES)
-    };
-
-    // Determine the max length too.
-    let max_summary_line_len = width as usize - 3; // len(">> ") == 3.
-
-    // Write the summaries.
-    for idx in 0..num_summary_lines {
-        let summary_line = &lines[messages[(idx + top_summary_idx) as usize].subject_idx as usize];
-        let summary_line = &summary_line[..std::cmp::min(summary_line.len(), max_summary_line_len)];
-        if idx + top_summary_idx == message_idx {
-            write!(stdout, "{}>> ", termion::cursor::Goto(1, (idx + 1) as u16))?;
-        }
-        write!(
-            stdout,
-            "{}{}",
-            termion::cursor::Goto(4, (idx + 1) as u16),
-            summary_line
-        )?;
-    }
-
-    // Write the message.  We start them from a 1 line gap after the summary.
-    let top_message_line_offs = num_summary_lines + 1;
-    let num_message_lines = height as i64 - top_message_line_offs;
-    let message = &messages[message_idx as usize];
-    let top_message_line_idx = std::cmp::max(
-        message.body_idx,
-        std::cmp::min(
-            message.body_idx + page_idx * num_message_lines,
-            message.end_idx - num_message_lines,
-        ),
-    );
-    for idx in 0..num_message_lines {
-        if top_message_line_idx + idx < message.end_idx {
-            let message_line = &lines[(top_message_line_idx + idx) as usize];
-            let message_line = &message_line[..std::cmp::min(message_line.len(), width as usize)];
-            write!(
-                stdout,
-                "{}{}",
-                termion::cursor::Goto(1, (top_message_line_offs + 1 + idx) as u16),
-                message_line
-            )?;
-        } else {
-            write!(
-                stdout,
-                "{}~",
-                termion::cursor::Goto(1, (top_message_line_offs + 1 + idx) as u16)
-            )?;
-        }
-    }
-
-    stdout.flush()
+    Ok(())
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -244,7 +157,7 @@ impl<'a> MessageListUpdater<'a> {
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn parse_mbox(lines: &Vec<String>) -> Vec<Message> {
+fn parse_mbox(lines: &[String]) -> Vec<Message> {
     let mut messages = Vec::<Message>::new();
     let mut updater = MessageListUpdater {
         messages: &mut messages,
@@ -272,6 +185,161 @@ fn parse_mbox(lines: &Vec<String>) -> Vec<Message> {
     }
     updater.update_last_message(|msg| msg.end_idx = lines.len() as i64);
     messages
+}
+
+// -------------------------------------------------------------------------------------------------
+
+struct MessagesModel<'a, T: std::io::Write> {
+    lines: Vec<String>,
+    messages: Vec<Message>,
+    stdout: &'a mut termion::raw::RawTerminal<T>,
+    selected_message_idx: i64,
+    viewed_top_line_idx: i64,
+}
+
+impl<'a, T: std::io::Write> Drop for MessagesModel<'a, T> {
+    fn drop(&mut self) {
+        // Show the cursor again.
+        write!(self.stdout, "{}", termion::cursor::Show).unwrap();
+    }
+}
+
+const MAX_SUMMARY_LINES: i64 = 8;
+const MIN_MESSAGE_LINES: i64 = 8;
+
+impl<'a, T: std::io::Write> MessagesModel<'a, T> {
+    fn new(
+        lines: Vec<String>,
+        messages: Vec<Message>,
+        stdout: &mut termion::raw::RawTerminal<T>,
+    ) -> MessagesModel<T> {
+        // Hide the cursor on construction.
+        write!(stdout, "{}", termion::cursor::Hide).unwrap();
+
+        MessagesModel {
+            lines,
+            messages,
+            stdout: stdout,
+            selected_message_idx: 0,
+            viewed_top_line_idx: 0,
+        }
+    }
+
+    fn increment_selected(&mut self) {
+        self.selected_message_idx =
+            std::cmp::min(self.selected_message_idx + 1, self.lines.len() as i64 - 1);
+        self.viewed_top_line_idx = 0
+    }
+
+    fn decrement_selected(&mut self) {
+        self.selected_message_idx = std::cmp::max(self.selected_message_idx - 1, 0);
+        self.viewed_top_line_idx = 0
+    }
+
+    fn page_view_down(&mut self) -> std::io::Result<()> {
+        let (_, _, num_message_lines) = self.get_tui_dimensions()?;
+        let message = &self.messages[self.selected_message_idx as usize];
+        if self.viewed_top_line_idx + num_message_lines < message.end_idx {
+            self.viewed_top_line_idx += num_message_lines
+        }
+        Ok(())
+    }
+
+    fn page_view_up(&mut self) -> std::io::Result<()> {
+        let (_, _, num_message_lines) = self.get_tui_dimensions()?;
+        if self.viewed_top_line_idx - num_message_lines >= 0 {
+            self.viewed_top_line_idx -= num_message_lines
+        }
+        Ok(())
+    }
+
+    fn get_tui_dimensions(&self) -> std::io::Result<(i64, i64, i64)> {
+        // Return the width, summary height and view height.  We assume a single line gap between
+        // the summary and the message view.
+        let (width, height) = termion::terminal_size()?;
+        if (height as i64) < MIN_MESSAGE_LINES + 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Terminal size is too small.",
+            ));
+        }
+
+        let num_summary_lines = std::cmp::min(self.messages.len() as i64, MAX_SUMMARY_LINES);
+        let num_message_lines = height as i64 - num_summary_lines - 1;
+        Ok((width as i64, num_summary_lines, num_message_lines))
+    }
+
+    fn show(&mut self) -> std::io::Result<()> {
+        // Clear the screen.
+        write!(self.stdout, "{}", termion::clear::All)?;
+
+        // Work out how big the message summary list is.
+        let (width, num_summary_lines, num_message_lines) = self.get_tui_dimensions()?;
+        let top_summary_idx = if self.selected_message_idx < num_summary_lines {
+            0
+        } else {
+            std::cmp::min(
+                self.selected_message_idx,
+                self.messages.len() as i64 - MAX_SUMMARY_LINES,
+            )
+        };
+
+        // Determine the max length too.
+        let max_summary_line_len = width as usize - 3; // len(">> ") == 3.
+
+        // Write the summaries.
+        for idx in 0..num_summary_lines {
+            let summary_line =
+                &self.lines[self.messages[(idx + top_summary_idx) as usize].subject_idx as usize];
+            let summary_line =
+                &summary_line[..std::cmp::min(summary_line.len(), max_summary_line_len)];
+            if idx + top_summary_idx == self.selected_message_idx {
+                write!(
+                    self.stdout,
+                    "{}>> ",
+                    termion::cursor::Goto(1, (idx + 1) as u16)
+                )?;
+            }
+            write!(
+                self.stdout,
+                "{}{}",
+                termion::cursor::Goto(4, (idx + 1) as u16),
+                summary_line
+            )?;
+        }
+
+        // Write the message.  We start them from a 1 line gap after the summary.
+        let top_message_line_offs = num_summary_lines + 1;
+        let message = &self.messages[self.selected_message_idx as usize];
+        let top_message_line_idx = std::cmp::max(
+            message.body_idx,
+            std::cmp::min(
+                message.body_idx + self.viewed_top_line_idx,
+                message.end_idx - num_message_lines,
+            ),
+        );
+        for idx in 0..num_message_lines {
+            if top_message_line_idx + idx < message.end_idx {
+                let message_line = &self.lines[(top_message_line_idx + idx) as usize];
+                let message_line =
+                    &message_line[..std::cmp::min(message_line.len(), width as usize)];
+                write!(
+                    self.stdout,
+                    "{}{}",
+                    termion::cursor::Goto(1, (top_message_line_offs + 1 + idx) as u16),
+                    message_line
+                )?;
+            } else {
+                write!(
+                    self.stdout,
+                    "{}~",
+                    termion::cursor::Goto(1, (top_message_line_offs + 1 + idx) as u16)
+                )?;
+            }
+        }
+
+        self.stdout.flush()
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
