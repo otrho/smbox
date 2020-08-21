@@ -1,18 +1,9 @@
 use std::io::BufRead;
 
+mod mbox;
+mod iface;
+
 // -------------------------------------------------------------------------------------------------
-// [X] Find mbox.
-// [X] Read all lines.
-// [ ] Divide into messages:
-//     [X] '^From' divider.
-//     [X] Useful headers, especially 'Subject:'.
-//     [X] Body.
-// [ ] UI:
-//     [X] Message selector, headers summary.
-//     [X] Show messages (via pager?)
-//     [ ] Colours.
-//     [ ] Delete.
-//
 // Keys:
 //   Selector:
 //     enter   - view in pager
@@ -44,12 +35,16 @@ fn main() {
 
 fn smbox() -> std::io::Result<()> {
     // Read lines as a vector of strings from the mbox path found in $MAIL.
-    let lines = read_lines(get_mbox_path()?)?;
+    let lines = read_lines(mbox::get_mbox_path()?)?;
     if lines.is_empty() {
         println!("No mail.");
     } else {
-        let messages = parse_mbox(&lines);
-        run_event_loop(lines, messages)?;
+        let messages = mbox::parse_mbox(&lines);
+        let actions = iface::run(&lines, &messages);
+
+        for action in actions {
+            println!("{:?}", action)
+        }
     }
 
     println!("");
@@ -57,127 +52,6 @@ fn smbox() -> std::io::Result<()> {
 }
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-
-use std::io::Write;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-
-fn run_event_loop(lines: Vec<String>, messages: Vec<Message>) -> std::io::Result<()> {
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout().into_raw_mode()?;
-    write!(stdout, "{}", termion::cursor::Hide)?;
-
-    let mut msg_idx = 0;
-    let mut page_idx = 0;
-    update_ui(&lines, &messages, &mut stdout, msg_idx, page_idx)?;
-
-    for inp in stdin.keys() {
-        match inp? {
-            termion::event::Key::Char('q') => break,
-            termion::event::Key::Char('j') => {
-                msg_idx = std::cmp::min(msg_idx + 1, messages.len() as i64 - 1);
-                page_idx = 0;
-            }
-            termion::event::Key::Char('k') => {
-                msg_idx = std::cmp::max(msg_idx - 1, 0);
-                page_idx = 0;
-            }
-            termion::event::Key::Char(' ') | termion::event::Key::Char('f') => {
-                page_idx = page_idx + 1
-            }
-            termion::event::Key::Char('b') => page_idx = std::cmp::max(page_idx - 1, 0),
-            _ => {}
-        }
-        update_ui(&lines, &messages, &mut stdout, msg_idx, page_idx)?;
-    }
-    write!(stdout, "{}", termion::cursor::Show)
-}
-
-// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-
-const MAX_SUMMARY_LINES: i64 = 8;
-const MIN_MESSAGE_LINES: i64 = 8;
-
-fn update_ui<T>(
-    lines: &Vec<String>,
-    messages: &Vec<Message>,
-    stdout: &mut termion::raw::RawTerminal<T>,
-    message_idx: i64,
-    page_idx: i64,
-) -> std::io::Result<()>
-where
-    T: std::io::Write,
-{
-    // Clear the screen.
-    write!(stdout, "{}", termion::clear::All)?;
-
-    let (width, height) = termion::terminal_size()?;
-    if (height as i64) < MIN_MESSAGE_LINES + 2 {
-        // This is a non-fatal error.
-        write!(stdout, "Terminal size is too small.")?;
-        return Ok(());
-    }
-
-    // Work out how big the message summary list is.
-    let num_summary_lines = std::cmp::min(messages.len() as i64, MAX_SUMMARY_LINES);
-    let top_summary_idx = if message_idx < num_summary_lines {
-        0
-    } else {
-        std::cmp::min(message_idx, messages.len() as i64 - MAX_SUMMARY_LINES)
-    };
-
-    // Determine the max length too.
-    let max_summary_line_len = width as usize - 3; // len(">> ") == 3.
-
-    // Write the summaries.
-    for idx in 0..num_summary_lines {
-        let summary_line = &lines[messages[(idx + top_summary_idx) as usize].subject_idx as usize];
-        let summary_line = &summary_line[..std::cmp::min(summary_line.len(), max_summary_line_len)];
-        if idx + top_summary_idx == message_idx {
-            write!(stdout, "{}>> ", termion::cursor::Goto(1, (idx + 1) as u16))?;
-        }
-        write!(
-            stdout,
-            "{}{}",
-            termion::cursor::Goto(4, (idx + 1) as u16),
-            summary_line
-        )?;
-    }
-
-    // Write the message.  We start them from a 1 line gap after the summary.
-    let top_message_line_offs = num_summary_lines + 1;
-    let num_message_lines = height as i64 - top_message_line_offs;
-    let message = &messages[message_idx as usize];
-    let top_message_line_idx = std::cmp::max(
-        message.body_idx,
-        std::cmp::min(
-            message.body_idx + page_idx * num_message_lines,
-            message.end_idx - num_message_lines,
-        ),
-    );
-    for idx in 0..num_message_lines {
-        if top_message_line_idx + idx < message.end_idx {
-            let message_line = &lines[(top_message_line_idx + idx) as usize];
-            let message_line = &message_line[..std::cmp::min(message_line.len(), width as usize)];
-            write!(
-                stdout,
-                "{}{}",
-                termion::cursor::Goto(1, (top_message_line_offs + 1 + idx) as u16),
-                message_line
-            )?;
-        } else {
-            write!(
-                stdout,
-                "{}~",
-                termion::cursor::Goto(1, (top_message_line_offs + 1 + idx) as u16)
-            )?;
-        }
-    }
-
-    stdout.flush()
-}
-
-// -------------------------------------------------------------------------------------------------
 
 fn read_lines(path: String) -> std::io::Result<Vec<String>> {
     let reader = std::io::BufReader::new(std::fs::File::open(path)?);
@@ -190,88 +64,5 @@ fn read_lines(path: String) -> std::io::Result<Vec<String>> {
 
 // -------------------------------------------------------------------------------------------------
 
-fn get_mbox_path() -> std::io::Result<String> {
-    match std::env::vars_os().find(|(key, _)| key == "MAIL") {
-        None => Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "error: Unable to determine mbox path; missing MAIL environment variable.",
-        )),
-        Some((_, env_value)) => env_value.into_string().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "error: Malformed string in MAIL environment variable.",
-            )
-        }),
-    }
-}
-
-// -------------------------------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct Message {
-    start_idx: i64,
-    end_idx: i64, // Index to line *after* last line in message.
-    date_idx: i64,
-    from_idx: i64,
-    subject_idx: i64,
-    body_idx: i64,
-}
-
-// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-
-struct MessageListUpdater<'a> {
-    messages: &'a mut Vec<Message>,
-}
-
-impl<'a> MessageListUpdater<'a> {
-    fn add_new_message(&mut self, start_idx: i64) {
-        self.messages.push(Message {
-            start_idx,
-            end_idx: 0,
-            date_idx: 0,
-            from_idx: 0,
-            subject_idx: 0,
-            body_idx: 0,
-        });
-    }
-
-    fn update_last_message<F: FnOnce(&mut Message)>(&mut self, f: F) {
-        if let Some(last_message) = self.messages.last_mut() {
-            f(last_message)
-        }
-    }
-}
-
-// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-
-fn parse_mbox(lines: &Vec<String>) -> Vec<Message> {
-    let mut messages = Vec::<Message>::new();
-    let mut updater = MessageListUpdater {
-        messages: &mut messages,
-    };
-    for (idx, line) in lines.iter().enumerate() {
-        let idx = idx as i64;
-        if line.starts_with("From ") {
-            updater.update_last_message(|msg| msg.end_idx = idx);
-            updater.add_new_message(idx);
-        } else if line.starts_with("Date: ") {
-            updater.update_last_message(|msg| msg.date_idx = idx);
-        } else if line.starts_with("From: ") {
-            updater.update_last_message(|msg| msg.from_idx = idx);
-        } else if line.starts_with("Subject: ") {
-            updater.update_last_message(|msg| msg.subject_idx = idx);
-        } else if line.is_empty() {
-            updater.update_last_message(|msg| {
-                if msg.body_idx == 0 {
-                    // The body index points to the first line after the empty line which separates
-                    // the headers from the body.
-                    msg.body_idx = idx + 1
-                }
-            });
-        }
-    }
-    updater.update_last_message(|msg| msg.end_idx = lines.len() as i64);
-    messages
-}
 
 // -------------------------------------------------------------------------------------------------
