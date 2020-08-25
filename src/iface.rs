@@ -2,7 +2,6 @@
 
 #[derive(Debug)]
 pub enum Action {
-    //DeleteAllMessages,
     DeleteMessage(i64),
 }
 
@@ -28,18 +27,26 @@ pub fn run(
     for inp_key in stdin.keys() {
         match inp_key? {
             termion::event::Key::Char('q') => break,
+            termion::event::Key::Char('x') => {
+                iface.clear_deleted_messages();
+                break;
+            }
             termion::event::Key::Char('j') => iface.increment_header_index(1),
             termion::event::Key::Char('k') => iface.increment_header_index(-1),
             termion::event::Key::Char(' ') => iface.increment_page(1),
             termion::event::Key::Char('b') => iface.increment_page(-1),
             termion::event::Key::Char('g') => iface.first_page(),
+            termion::event::Key::Char('d') => iface.delete_selected(),
             _ => (),
         }
 
         iface.draw(&mut terminal)?;
     }
 
-    Ok(vec![Action::DeleteMessage(42)])
+    Ok(iface
+        .deleted_messages_iter()
+        .map(|&idx| Action::DeleteMessage(idx))
+        .collect())
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -49,6 +56,7 @@ struct IfaceState<'a> {
     messages: &'a Vec<super::mbox::Message>,
     headers_state: tui::widgets::ListState,
     body_page_idx: i64,
+    deleted_messages: std::collections::BTreeSet<i64>,
 }
 
 // To simplify things a bit we're doubling down on just using a Termion backend.
@@ -65,6 +73,7 @@ impl<'a> IfaceState<'a> {
             messages,
             headers_state: tui::widgets::ListState::default(),
             body_page_idx: 0,
+            deleted_messages: std::collections::BTreeSet::new(),
         }
     }
 
@@ -85,8 +94,23 @@ impl<'a> IfaceState<'a> {
         self.body_page_idx = 0;
     }
 
+    fn delete_selected(&mut self) {
+        if let Some(idx) = self.headers_state.selected() {
+            self.deleted_messages.insert(idx as i64);
+            self.increment_header_index(1);
+        }
+    }
+
+    fn clear_deleted_messages(&mut self) {
+        self.deleted_messages.clear();
+    }
+
+    fn deleted_messages_iter(&self) -> impl Iterator<Item = &i64> {
+        self.deleted_messages.iter()
+    }
+
     fn draw(&mut self, terminal: &mut IfaceTerminal) -> std::io::Result<()> {
-        terminal.draw(|f| {
+        terminal.draw(|frame| {
             // Split the screen, top 25% for message selection menu, bottom 75% for message text.
             let chunks = tui::layout::Layout::default()
                 .direction(tui::layout::Direction::Vertical)
@@ -97,20 +121,26 @@ impl<'a> IfaceState<'a> {
                     ]
                     .as_ref(),
                 )
-                .split(f.size());
+                .split(frame.size());
 
             // Gather info from the message headers for the selection menu items.
             let headers: Vec<tui::widgets::ListItem> = self
                 .messages
                 .iter()
-                .map(|msg| {
-                    tui::widgets::ListItem::new(tui::text::Spans::from(
-                        self.lines[msg.subject_idx as usize].clone(),
-                    ))
+                .enumerate()
+                .map(|(idx, msg)| {
+                    tui::widgets::ListItem::new(tui::text::Spans::from(vec![
+                        tui::text::Span::raw(if self.deleted_messages.contains(&(idx as i64)) {
+                            "D "
+                        } else {
+                            "  "
+                        }),
+                        tui::text::Span::raw(self.lines[msg.subject_idx as usize].clone()),
+                    ]))
                 })
                 .collect();
             let headers = tui::widgets::List::new(headers).highlight_symbol("> ");
-            f.render_stateful_widget(headers, chunks[0], &mut self.headers_state);
+            frame.render_stateful_widget(headers, chunks[0], &mut self.headers_state);
 
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
@@ -123,11 +153,11 @@ impl<'a> IfaceState<'a> {
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
             // page based on the lower chunk size.  Instead we'll just go with 75% of the height.
-            let page_size = f.size().height * 3 / 4;
+            let page_size = frame.size().height * 3 / 4;
             let max_page_idx = message_text.len() / page_size as usize;
             self.body_page_idx = std::cmp::max(self.body_page_idx, 0);
             self.body_page_idx = std::cmp::min(self.body_page_idx, max_page_idx as i64);
-            f.render_widget(
+            frame.render_widget(
                 tui::widgets::Paragraph::new(message_text)
                     .scroll(((self.body_page_idx as u16 * page_size), 0)),
                 chunks[1],
