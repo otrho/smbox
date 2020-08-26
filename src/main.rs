@@ -1,24 +1,8 @@
 use std::io::BufRead;
 
-mod mbox;
 mod iface;
+mod mbox;
 
-// -------------------------------------------------------------------------------------------------
-// Keys:
-//   Selector:
-//     enter   - view in pager
-//     j/k     - down/up
-//     d/u     - delete/undelete
-//     q       - write changes, exit
-//     x       - discard changes, exit
-//   Pager:
-//     space/f - page down
-//     b       - page up
-//     g/G     - goto top/bottom
-//     d/u     - delete/undelete
-//     q       - keep changes, return
-//     x       - discard changes, return
-//
 // -------------------------------------------------------------------------------------------------
 
 fn main() {
@@ -40,10 +24,10 @@ fn smbox() -> std::io::Result<()> {
         println!("No mail.");
     } else {
         let messages = mbox::parse_mbox(&lines);
-        let actions = iface::run(&lines, &messages);
+        let actions = iface::run(&lines, &messages)?;
 
-        for action in actions {
-            println!("{:?}", action)
+        if !actions.is_empty() {
+            perform_actions(&lines, &messages, actions)?;
         }
     }
 
@@ -62,7 +46,60 @@ fn read_lines(path: String) -> std::io::Result<Vec<String>> {
     Ok(lines)
 }
 
-// -------------------------------------------------------------------------------------------------
+// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+
+fn perform_actions(
+    lines: &Vec<String>,
+    messages: &Vec<mbox::Message>,
+    actions: Vec<iface::Action>,
+) -> std::io::Result<()> {
+    // Right now we only support DeleteMessage actions.  We should get a compile error about
+    // non-exhaustive pattern matches if/when there are other actions introducted in the future.
+    assert!(actions.iter().all(|action| match action {
+        iface::Action::DeleteMessage(_) => true,
+    }));
+
+    let message_is_deleted = |idx: i64| {
+        actions.iter().any(|action| match action {
+            iface::Action::DeleteMessage(del_idx) => idx == *del_idx,
+        })
+    };
+
+    // Create a replacement mbox file with remaining messages.
+    {
+        let temp_mbox_file_path = mktemp::Temp::new_file()?;
+        {
+            let mut temp_mbox_file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&temp_mbox_file_path)?;
+
+            // Make sure the permissions are rw------- even though that seems to be the default.
+            temp_mbox_file.metadata()?.permissions().set_mode(0o600);
+
+            // If the number of deletions is the number of messages then we are deleting all messages and
+            // don't need to write to the new mbox file at all.
+            if actions.len() < messages.len() {
+                // Write the messages we're keeping.
+                for (idx, msg) in messages.iter().enumerate() {
+                    if !message_is_deleted(idx as i64) {
+                        for line_idx in msg.start_idx..msg.end_idx {
+                            // I'm not 100% happy with this.  Perhaps writing the line with
+                            // std::fs::File::write() and then writing the newline separately would
+                            // be better?
+                            std::writeln!(temp_mbox_file, "{}", lines[line_idx as usize])?;
+                        }
+                    }
+                }
+            }
+        }
+
+        std::fs::copy(temp_mbox_file_path, mbox::get_mbox_path()?)?;
+    }
+
+    Ok(())
+}
 
 // -------------------------------------------------------------------------------------------------
