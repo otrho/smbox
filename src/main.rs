@@ -27,11 +27,14 @@ fn smbox() -> std::io::Result<()> {
         let actions = iface::run(&lines, &messages)?;
 
         if !actions.is_empty() {
-            perform_actions(&lines, &messages, actions)?;
+            let num_deleted_messages = perform_actions(&lines, &messages, actions)?;
+            if num_deleted_messages == messages.len() as i64 {
+                println!("Deleted all messages.");
+            } else if num_deleted_messages > 0 {
+                println!("Deleted {} message(s).", num_deleted_messages);
+            }
         }
     }
-
-    println!("");
     Ok(())
 }
 
@@ -55,7 +58,7 @@ fn perform_actions(
     lines: &Vec<String>,
     messages: &Vec<mbox::Message>,
     actions: Vec<iface::Action>,
-) -> std::io::Result<()> {
+) -> std::io::Result<i64> {
     // Right now we only support DeleteMessage actions.  We should get a compile error about
     // non-exhaustive pattern matches if/when there are other actions introducted in the future.
     assert!(actions.iter().all(|action| match action {
@@ -99,7 +102,10 @@ fn perform_actions(
         std::fs::copy(temp_mbox_file_path, mbox::get_mbox_path()?)?;
     }
 
-    Ok(())
+    // While we only have a delete action and no others we can assume number of deleted messages is
+    // the number of actions.
+    let num_deleted_msgs = actions.len() as i64;
+    Ok(num_deleted_msgs)
 }
 
 // -------------------------------------------------------------------------------------------------
