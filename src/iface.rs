@@ -110,13 +110,25 @@ impl<'a> IfaceState<'a> {
     }
 
     fn draw(&mut self, terminal: &mut IfaceTerminal) -> std::io::Result<()> {
+        // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
+        let prepare_field = |line: &str, width: usize| {
+            let mut stripped = line.split(": ").nth(1).unwrap_or(&line).to_string();
+            stripped.truncate(width);
+            format!("{:1$}", stripped, width)
+        };
+
+        // Another little lambda to truncate the date string.  We're expecting it in the form
+        // 'Fri, 4 Sep 2020 11:44:49 +1000 (AEST)' and we'll just cut off the TZ stuff.
+        let reformat_date = |line: &'a str| line.split(" +").nth(0).unwrap_or(&line);
+
         terminal.draw(|frame| {
             // Split the screen, top 25% for message selection menu, bottom 75% for message text.
             let chunks = tui::layout::Layout::default()
                 .direction(tui::layout::Direction::Vertical)
                 .constraints(
                     [
-                        tui::layout::Constraint::Percentage(25),
+                        tui::layout::Constraint::Max(self.messages.len() as u16),
+                        tui::layout::Constraint::Length(1),
                         tui::layout::Constraint::Percentage(75),
                     ]
                     .as_ref(),
@@ -135,12 +147,45 @@ impl<'a> IfaceState<'a> {
                         } else {
                             "  "
                         }),
-                        tui::text::Span::raw(self.lines[msg.subject_idx as usize].clone()),
+                        // Make the date 20 chars, the from field 40 and the subject can be
+                        // longer.
+                        tui::text::Span::raw(prepare_field(
+                            &reformat_date(&self.lines[msg.date_idx as usize]),
+                            25,
+                        )),
+                        tui::text::Span::raw(" | "),
+                        tui::text::Span::raw(prepare_field(&self.lines[msg.from_idx as usize], 40)),
+                        tui::text::Span::raw(" | "),
+                        tui::text::Span::raw(prepare_field(
+                            &self.lines[msg.subject_idx as usize],
+                            80, // XXX Should be at least to screen width.
+                        )),
                     ]))
                 })
                 .collect();
-            let headers = tui::widgets::List::new(headers).highlight_symbol("> ");
+            let headers = tui::widgets::List::new(headers)
+                .highlight_symbol("> ")
+                .highlight_style(
+                    tui::style::Style::default()
+                        .fg(tui::style::Color::White)
+                        .bg(tui::style::Color::Indexed(236)), // Grey.
+                );
             frame.render_stateful_widget(headers, chunks[0], &mut self.headers_state);
+
+            // Add a little infomational divider between the headers and the message body.
+            let info_text = format!(
+                " --- {}/{} ---",
+                self.headers_state
+                    .selected()
+                    .map(|n| (n + 1).to_string())
+                    .unwrap_or("??".to_string()),
+                self.messages.len(),
+            );
+            frame.render_widget(
+                tui::widgets::Paragraph::new(tui::text::Span::raw(info_text))
+                    .style(tui::style::Style::default().fg(tui::style::Color::Indexed(71))), // Green.
+                chunks[1],
+            );
 
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
@@ -160,7 +205,7 @@ impl<'a> IfaceState<'a> {
             frame.render_widget(
                 tui::widgets::Paragraph::new(message_text)
                     .scroll(((self.body_page_idx as u16 * page_size), 0)),
-                chunks[1],
+                chunks[2],
             );
         })
     }
