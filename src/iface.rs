@@ -207,7 +207,8 @@ impl<'a> IfaceState<'a> {
                     .scroll(((self.body_page_idx as u16 * page_size), 0)),
                 chunks[2],
             );
-        })
+        })?;
+        Ok(())
     }
 }
 
