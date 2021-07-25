@@ -57,6 +57,9 @@ struct IfaceState<'a> {
     headers_state: tui::widgets::ListState,
     body_page_idx: i64,
     deleted_messages: std::collections::BTreeSet<i64>,
+
+    // XXX this needs to go in its own match context manager.
+    highlight_re: regex::Regex,
 }
 
 // To simplify things a bit we're doubling down on just using a Termion backend.
@@ -74,6 +77,7 @@ impl<'a> IfaceState<'a> {
             headers_state: tui::widgets::ListState::default(),
             body_page_idx: 0,
             deleted_messages: std::collections::BTreeSet::new(),
+            highlight_re: regex::Regex::new(r"[Gg]rusly").expect("Failed to compile RE."),
         }
     }
 
@@ -189,12 +193,11 @@ impl<'a> IfaceState<'a> {
 
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
-            let mut message_text = Vec::<tui::text::Spans>::new();
-            for message_line_idx in message.body_idx..message.end_idx {
-                message_text.push(tui::text::Spans::from(
-                    self.lines[message_line_idx as usize].clone(),
-                ));
-            }
+            let message_text: Vec<tui::text::Spans> = (message.body_idx..message.end_idx)
+                .map(|line_idx| {
+                    highlighted_line(&self.highlight_re, &self.lines[line_idx as usize])
+                })
+                .collect();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
             // page based on the lower chunk size.  Instead we'll just go with 75% of the height.
@@ -210,6 +213,24 @@ impl<'a> IfaceState<'a> {
         })?;
         Ok(())
     }
+}
+
+// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
+
+fn highlighted_line<'a>(pat: &regex::Regex, line: &'a str) -> tui::text::Spans<'a> {
+    let mut spans = Vec::<tui::text::Span>::new();
+    let mut idx = 0_usize;
+    for mtch in pat.find_iter(line) {
+        spans.push(tui::text::Span::raw(&line[idx..mtch.start()]));
+        spans.push(tui::text::Span::styled(
+            mtch.as_str(),
+            tui::style::Style::default().fg(tui::style::Color::Yellow),
+        ));
+        idx = mtch.end();
+    }
+    spans.push(tui::text::Span::raw(&line[idx..]));
+
+    tui::text::Spans::from(spans)
 }
 
 // -------------------------------------------------------------------------------------------------
