@@ -21,8 +21,22 @@ pub fn run(
     let mut terminal = tui::Terminal::new(tui::backend::TermionBackend::new(stdout))?;
     let mut iface = IfaceState::new(lines, messages);
 
+    let highlight_ctx: Highlights = vec![
+        (
+            regex::Regex::new(r"[Gg]rusly").expect("Failed to compile RE."),
+            107_u8,
+        ),
+        (regex::Regex::new(r"rus").unwrap(), 167_u8),
+        (
+            regex::Regex::new(r"Bad protocol version.*(port)").unwrap(),
+            140_u8,
+        ),
+        (regex::Regex::new(r"protocol version").unwrap(), 90_u8),
+        (regex::Regex::new(r"Bad protocol").unwrap(), 100_u8),
+    ];
+
     iface.headers_state.select(Some(0));
-    iface.draw(&mut terminal)?;
+    iface.draw(&mut terminal, &highlight_ctx)?;
 
     for inp_key in stdin.keys() {
         match inp_key? {
@@ -40,7 +54,7 @@ pub fn run(
             _ => (),
         }
 
-        iface.draw(&mut terminal)?;
+        iface.draw(&mut terminal, &highlight_ctx)?;
     }
 
     Ok(iface
@@ -57,9 +71,6 @@ struct IfaceState<'a> {
     headers_state: tui::widgets::ListState,
     body_page_idx: i64,
     deleted_messages: std::collections::BTreeSet<i64>,
-
-    // XXX this needs to go in its own match context manager.
-    highlight_re: regex::Regex,
 }
 
 // To simplify things a bit we're doubling down on just using a Termion backend.
@@ -77,7 +88,6 @@ impl<'a> IfaceState<'a> {
             headers_state: tui::widgets::ListState::default(),
             body_page_idx: 0,
             deleted_messages: std::collections::BTreeSet::new(),
-            highlight_re: regex::Regex::new(r"[Gg]rusly").expect("Failed to compile RE."),
         }
     }
 
@@ -113,7 +123,11 @@ impl<'a> IfaceState<'a> {
         self.deleted_messages.iter()
     }
 
-    fn draw(&mut self, terminal: &mut IfaceTerminal) -> std::io::Result<()> {
+    fn draw(
+        &mut self,
+        terminal: &mut IfaceTerminal,
+        highlights: &Highlights,
+    ) -> std::io::Result<()> {
         // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
         let prepare_field = |line: &str, width: usize| {
             let mut stripped = line.split(": ").nth(1).unwrap_or(&line).to_string();
@@ -194,9 +208,7 @@ impl<'a> IfaceState<'a> {
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
             let message_text: Vec<tui::text::Spans> = (message.body_idx..message.end_idx)
-                .map(|line_idx| {
-                    highlighted_line(&self.highlight_re, &self.lines[line_idx as usize])
-                })
+                .map(|line_idx| highlighted_line(&highlights, &self.lines[line_idx as usize]))
                 .collect();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
@@ -215,22 +227,76 @@ impl<'a> IfaceState<'a> {
     }
 }
 
-// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
+// -------------------------------------------------------------------------------------------------
 
-fn highlighted_line<'a>(pat: &regex::Regex, line: &'a str) -> tui::text::Spans<'a> {
+// A collection of pairs of regex and an index into xterm256 colour table.
+type Highlights = Vec<(regex::Regex, u8)>;
+
+fn highlighted_line<'a>(ctx: &Highlights, line: &'a str) -> tui::text::Spans<'a> {
     let mut spans = Vec::<tui::text::Span>::new();
-    let mut idx = 0_usize;
-    for mtch in pat.find_iter(line) {
-        spans.push(tui::text::Span::raw(&line[idx..mtch.start()]));
-        spans.push(tui::text::Span::styled(
-            mtch.as_str(),
-            tui::style::Style::default().fg(tui::style::Color::Yellow),
-        ));
-        idx = mtch.end();
-    }
-    spans.push(tui::text::Span::raw(&line[idx..]));
+    let mut save_span = |start, end, colour| match colour {
+        None => {
+            spans.push(tui::text::Span::raw(&line[start..end]));
+        }
+        Some(colour_idx) => {
+            spans.push(tui::text::Span::styled(
+                &line[start..end],
+                tui::style::Style::default().fg(tui::style::Color::Indexed(colour_idx)),
+            ));
+        }
+    };
+
+    let matches = collect_matches(ctx, line);
+    let (final_idx, final_colour) = (0..line.len()).fold(
+        (0, get_colour_at(&matches, 0)),
+        |(start, cur_colour), ch_idx| {
+            let next_colour = get_colour_at(&matches, ch_idx);
+            if next_colour == cur_colour {
+                (start, cur_colour)
+            } else {
+                save_span(start, ch_idx, cur_colour);
+                (ch_idx, next_colour)
+            }
+        },
+    );
+    save_span(final_idx, line.len(), final_colour);
 
     tui::text::Spans::from(spans)
+}
+
+// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
+// For each regular expression in the Highlights, get a match (either the whole RE or its first
+// explicit capture if it has one) and save the start and end, along with the match colour, to a
+// vector.
+
+fn collect_matches(ctx: &Highlights, line: &str) -> Vec<((usize, usize), u8)> {
+    let mut matches = Vec::new();
+    for (re, colour) in ctx {
+        if let Some(caps) = re.captures(line) {
+            let mtch = if caps.len() == 1 {
+                caps.get(0)
+            } else {
+                caps.get(1)
+            }
+            .expect("BUG! `caps` is guaranteed to have at least one match.");
+            matches.push(((mtch.start(), mtch.end()), *colour));
+        }
+    }
+    matches
+}
+
+// Determine which colour should be used at a particular index, based on the matches (from
+// collect_matches()), None if the index doesn't lie within a match.  Later matches in the list
+// simply override earlier ones.
+
+fn get_colour_at(matches: &[((usize, usize), u8)], idx: usize) -> Option<u8> {
+    matches.iter().fold(None, |prev, ((start, end), colour)| {
+        if idx >= *start && idx < *end {
+            Some(*colour)
+        } else {
+            prev
+        }
+    })
 }
 
 // -------------------------------------------------------------------------------------------------
