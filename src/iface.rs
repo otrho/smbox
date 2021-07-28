@@ -21,7 +21,7 @@ pub fn run(
     let mut terminal = tui::Terminal::new(tui::backend::TermionBackend::new(stdout))?;
     let mut iface = IfaceState::new(lines, messages);
 
-    let highlight_ctx: Highlights = vec![
+    let highlight_ctx = Highlighter::new(vec![
         (
             regex::Regex::new(r"[Gg]rusly").expect("Failed to compile RE."),
             107_u8,
@@ -33,7 +33,7 @@ pub fn run(
         ),
         (regex::Regex::new(r"protocol version").unwrap(), 90_u8),
         (regex::Regex::new(r"Bad protocol").unwrap(), 100_u8),
-    ];
+    ]);
 
     iface.headers_state.select(Some(0));
     iface.draw(&mut terminal, &highlight_ctx)?;
@@ -126,7 +126,7 @@ impl<'a> IfaceState<'a> {
     fn draw(
         &mut self,
         terminal: &mut IfaceTerminal,
-        highlights: &Highlights,
+        highlighter: &Highlighter,
     ) -> std::io::Result<()> {
         // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
         let prepare_field = |line: &str, width: usize| {
@@ -208,7 +208,7 @@ impl<'a> IfaceState<'a> {
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
             let message_text: Vec<tui::text::Spans> = (message.body_idx..message.end_idx)
-                .map(|line_idx| highlighted_line(&highlights, &self.lines[line_idx as usize]))
+                .map(|line_idx| highlighted_line(&highlighter, &self.lines[line_idx as usize]))
                 .collect();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
@@ -229,10 +229,7 @@ impl<'a> IfaceState<'a> {
 
 // -------------------------------------------------------------------------------------------------
 
-// A collection of pairs of regex and an index into xterm256 colour table.
-type Highlights = Vec<(regex::Regex, u8)>;
-
-fn highlighted_line<'a>(ctx: &Highlights, line: &'a str) -> tui::text::Spans<'a> {
+fn highlighted_line<'a>(highlighter: &Highlighter, line: &'a str) -> tui::text::Spans<'a> {
     let mut spans = Vec::<tui::text::Span>::new();
     let mut save_span = |start, end, colour| match colour {
         None => {
@@ -246,11 +243,11 @@ fn highlighted_line<'a>(ctx: &Highlights, line: &'a str) -> tui::text::Spans<'a>
         }
     };
 
-    let matches = collect_matches(ctx, line);
+    let highlights = highlighter.get_highlights(line);
     let (final_idx, final_colour) = (0..line.len()).fold(
-        (0, get_colour_at(&matches, 0)),
+        (0, highlights.get_colour_at(0)),
         |(start, cur_colour), ch_idx| {
-            let next_colour = get_colour_at(&matches, ch_idx);
+            let next_colour = highlights.get_colour_at(ch_idx);
             if next_colour == cur_colour {
                 (start, cur_colour)
             } else {
@@ -264,39 +261,52 @@ fn highlighted_line<'a>(ctx: &Highlights, line: &'a str) -> tui::text::Spans<'a>
     tui::text::Spans::from(spans)
 }
 
-// -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
-// For each regular expression in the Highlights, get a match (either the whole RE or its first
-// explicit capture if it has one) and save the start and end, along with the match colour, to a
-// vector.
+// -------------------------------------------------------------------------------------------------
 
-fn collect_matches(ctx: &Highlights, line: &str) -> Vec<((usize, usize), u8)> {
-    let mut matches = Vec::new();
-    for (re, colour) in ctx {
-        if let Some(caps) = re.captures(line) {
-            let mtch = if caps.len() == 1 {
-                caps.get(0)
-            } else {
-                caps.get(1)
-            }
-            .expect("BUG! `caps` is guaranteed to have at least one match.");
-            matches.push(((mtch.start(), mtch.end()), *colour));
-        }
-    }
-    matches
+struct Highlighter {
+    matchers: Vec<(regex::Regex, Colour256)>,
 }
 
-// Determine which colour should be used at a particular index, based on the matches (from
-// collect_matches()), None if the index doesn't lie within a match.  Later matches in the list
-// simply override earlier ones.
+type Colour256 = u8;
 
-fn get_colour_at(matches: &[((usize, usize), u8)], idx: usize) -> Option<u8> {
-    matches.iter().fold(None, |prev, ((start, end), colour)| {
-        if idx >= *start && idx < *end {
-            Some(*colour)
-        } else {
-            prev
+impl Highlighter {
+    fn new(matchers: Vec<(regex::Regex, Colour256)>) -> Highlighter {
+        Highlighter { matchers }
+    }
+
+    fn get_highlights(&self, line: &str) -> Highlights {
+        let mut highlights = Vec::new();
+        for (re, colour) in &self.matchers {
+            if let Some(caps) = re.captures(line) {
+                let mtch = if caps.len() == 1 {
+                    caps.get(0)
+                } else {
+                    caps.get(1)
+                }
+                .expect("BUG! `caps` is guaranteed to have at least one match.");
+                highlights.push(((mtch.start(), mtch.end()), *colour));
+            }
         }
-    })
+        Highlights { highlights }
+    }
+}
+
+struct Highlights {
+    highlights: Vec<((usize, usize), Colour256)>,
+}
+
+impl Highlights {
+    fn get_colour_at(&self, idx: usize) -> Option<Colour256> {
+        self.highlights
+            .iter()
+            .fold(None, |prev, ((start, end), colour)| {
+                if idx >= *start && idx < *end {
+                    Some(*colour)
+                } else {
+                    prev
+                }
+            })
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
