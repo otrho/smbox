@@ -21,22 +21,37 @@ pub fn run(
     let mut terminal = tui::Terminal::new(tui::backend::TermionBackend::new(stdout))?;
     let mut iface = IfaceState::new(lines, messages);
 
-    let highlight_ctx = Highlighter::new(vec![
-        (
-            regex::Regex::new(r"[Gg]rusly").expect("Failed to compile RE."),
-            107_u8,
-        ),
-        (regex::Regex::new(r"rus").unwrap(), 167_u8),
-        (
-            regex::Regex::new(r"Bad protocol version.*(port)").unwrap(),
-            140_u8,
-        ),
-        (regex::Regex::new(r"protocol version").unwrap(), 90_u8),
-        (regex::Regex::new(r"Bad protocol").unwrap(), 100_u8),
-    ]);
+    let mut highlight_ctx = Highlighter {
+        ctx_matchers: vec![
+            HighlightContext {
+                ctx_re: regex::Regex::new(r"login failures:$").unwrap(),
+                ctx_id: "login failures".to_owned(),
+                matchers: vec![
+                    (
+                        regex::Regex::new(r"d......d").expect("Failed to compile RE."),
+                        107_u8,
+                    ),
+                    (regex::Regex::new(r" p[a-z]+ ").unwrap(), 167_u8),
+                    (
+                        regex::Regex::new(r"Bad protocol version.*(port)").unwrap(),
+                        140_u8,
+                    ),
+                    (regex::Regex::new(r"protocol version").unwrap(), 90_u8),
+                    (regex::Regex::new(r"Bad protocol").unwrap(), 100_u8),
+                ],
+            },
+            HighlightContext {
+                ctx_re: regex::Regex::new(r"denied packets:$").unwrap(),
+                ctx_id: "denied packets".to_owned(),
+                matchers: vec![(regex::Regex::new(r" p[a-z]+ ").unwrap(), 90_u8)],
+            },
+        ],
+        ctx_exit_re: Some(regex::Regex::new(r"^$").unwrap()),
+        ctx: None,
+    };
 
     iface.headers_state.select(Some(0));
-    iface.draw(&mut terminal, &highlight_ctx)?;
+    iface.draw(&mut terminal, &mut highlight_ctx)?;
 
     for inp_key in stdin.keys() {
         match inp_key? {
@@ -54,7 +69,7 @@ pub fn run(
             _ => (),
         }
 
-        iface.draw(&mut terminal, &highlight_ctx)?;
+        iface.draw(&mut terminal, &mut highlight_ctx)?;
     }
 
     Ok(iface
@@ -126,7 +141,7 @@ impl<'a> IfaceState<'a> {
     fn draw(
         &mut self,
         terminal: &mut IfaceTerminal,
-        highlighter: &Highlighter,
+        highlighter: &mut Highlighter,
     ) -> std::io::Result<()> {
         // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
         let prepare_field = |line: &str, width: usize| {
@@ -208,7 +223,7 @@ impl<'a> IfaceState<'a> {
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
             let message_text: Vec<tui::text::Spans> = (message.body_idx..message.end_idx)
-                .map(|line_idx| highlighted_line(&highlighter, &self.lines[line_idx as usize]))
+                .map(|line_idx| highlighted_line(highlighter, &self.lines[line_idx as usize]))
                 .collect();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
@@ -229,7 +244,7 @@ impl<'a> IfaceState<'a> {
 
 // -------------------------------------------------------------------------------------------------
 
-fn highlighted_line<'a>(highlighter: &Highlighter, line: &'a str) -> tui::text::Spans<'a> {
+fn highlighted_line<'a>(highlighter: &mut Highlighter, line: &'a str) -> tui::text::Spans<'a> {
     let mut spans = Vec::<tui::text::Span>::new();
     let mut save_span = |start, end, colour| match colour {
         None => {
@@ -264,27 +279,56 @@ fn highlighted_line<'a>(highlighter: &Highlighter, line: &'a str) -> tui::text::
 // -------------------------------------------------------------------------------------------------
 
 struct Highlighter {
+    ctx_matchers: Vec<HighlightContext>,
+    ctx_exit_re: Option<regex::Regex>,
+    ctx: Option<String>,
+}
+
+struct HighlightContext {
+    ctx_re: regex::Regex,
+    ctx_id: String,
     matchers: Vec<(regex::Regex, Colour256)>,
 }
 
 type Colour256 = u8;
 
 impl Highlighter {
-    fn new(matchers: Vec<(regex::Regex, Colour256)>) -> Highlighter {
-        Highlighter { matchers }
-    }
+    fn get_highlights(&mut self, line: &str) -> Highlights {
+        if let Some(exit_re) = &self.ctx_exit_re {
+            if exit_re.is_match(line) {
+                self.ctx = None;
+            }
+        }
 
-    fn get_highlights(&self, line: &str) -> Highlights {
+        let new_ctx = self.ctx_matchers.iter().fold(None, |new_ctx, ctx_matcher| {
+            if ctx_matcher.ctx_re.is_match(line) {
+                Some(&ctx_matcher.ctx_id)
+            } else {
+                new_ctx
+            }
+        });
+        if new_ctx.is_some() {
+            self.ctx = new_ctx.map(|id| id.clone());
+            return Highlights {
+                highlights: Vec::new(),
+            };
+        }
+
         let mut highlights = Vec::new();
-        for (re, colour) in &self.matchers {
-            if let Some(caps) = re.captures(line) {
-                let mtch = if caps.len() == 1 {
-                    caps.get(0)
-                } else {
-                    caps.get(1)
+        for ctx_matcher in &self.ctx_matchers {
+            if self
+                .ctx
+                .as_ref()
+                .map_or(false, |cur_id| cur_id == &ctx_matcher.ctx_id)
+            {
+                for (re, colour) in &ctx_matcher.matchers {
+                    if let Some(caps) = re.captures(line) {
+                        let mtch = caps
+                            .get(if caps.len() == 1 { 0 } else { 1 })
+                            .expect("BUG! `caps` is guaranteed to have at least one match.");
+                        highlights.push(((mtch.start(), mtch.end()), *colour));
+                    }
                 }
-                .expect("BUG! `caps` is guaranteed to have at least one match.");
-                highlights.push(((mtch.start(), mtch.end()), *colour));
             }
         }
         Highlights { highlights }
