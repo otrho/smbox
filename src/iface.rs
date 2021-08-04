@@ -1,3 +1,5 @@
+use crate::highlight;
+
 // -------------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -13,6 +15,7 @@ use termion::raw::IntoRawMode;
 pub fn run(
     lines: &Vec<String>,
     messages: &Vec<super::mbox::Message>,
+    highlighter: &mut highlight::Highlighter,
 ) -> std::io::Result<Vec<Action>> {
     let stdout = std::io::stdout().into_raw_mode()?;
     let stdout = termion::screen::AlternateScreen::from(stdout);
@@ -22,7 +25,7 @@ pub fn run(
     let mut iface = IfaceState::new(lines, messages);
 
     iface.headers_state.select(Some(0));
-    iface.draw(&mut terminal)?;
+    iface.draw(&mut terminal, highlighter)?;
 
     for inp_key in stdin.keys() {
         match inp_key? {
@@ -40,7 +43,7 @@ pub fn run(
             _ => (),
         }
 
-        iface.draw(&mut terminal)?;
+        iface.draw(&mut terminal, highlighter)?;
     }
 
     Ok(iface
@@ -109,7 +112,11 @@ impl<'a> IfaceState<'a> {
         self.deleted_messages.iter()
     }
 
-    fn draw(&mut self, terminal: &mut IfaceTerminal) -> std::io::Result<()> {
+    fn draw(
+        &mut self,
+        terminal: &mut IfaceTerminal,
+        highlighter: &mut highlight::Highlighter,
+    ) -> std::io::Result<()> {
         // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
         let prepare_field = |line: &str, width: usize| {
             let mut stripped = line.split(": ").nth(1).unwrap_or(&line).to_string();
@@ -189,12 +196,9 @@ impl<'a> IfaceState<'a> {
 
             // Put the message lines into a paragraph for the bottom window.
             let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
-            let mut message_text = Vec::<tui::text::Spans>::new();
-            for message_line_idx in message.body_idx..message.end_idx {
-                message_text.push(tui::text::Spans::from(
-                    self.lines[message_line_idx as usize].clone(),
-                ));
-            }
+            let message_text: Vec<tui::text::Spans> = (message.body_idx..message.end_idx)
+                .map(|line_idx| highlighted_line(highlighter, &self.lines[line_idx as usize]))
+                .collect();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
             // page based on the lower chunk size.  Instead we'll just go with 75% of the height.
@@ -210,6 +214,40 @@ impl<'a> IfaceState<'a> {
         })?;
         Ok(())
     }
+}
+
+// -------------------------------------------------------------------------------------------------
+
+fn highlighted_line<'a>(highlighter: &mut highlight::Highlighter, line: &'a str) -> tui::text::Spans<'a> {
+    let mut spans = Vec::<tui::text::Span>::new();
+    let mut save_span = |start, end, colour| match colour {
+        None => {
+            spans.push(tui::text::Span::raw(&line[start..end]));
+        }
+        Some(colour_idx) => {
+            spans.push(tui::text::Span::styled(
+                &line[start..end],
+                tui::style::Style::default().fg(tui::style::Color::Indexed(colour_idx)),
+            ));
+        }
+    };
+
+    let highlights = highlighter.get_highlights(line);
+    let (final_idx, final_colour) = (0..line.len()).fold(
+        (0, highlights.get_colour_at(0)),
+        |(start, cur_colour), ch_idx| {
+            let next_colour = highlights.get_colour_at(ch_idx);
+            if next_colour == cur_colour {
+                (start, cur_colour)
+            } else {
+                save_span(start, ch_idx, cur_colour);
+                (ch_idx, next_colour)
+            }
+        },
+    );
+    save_span(final_idx, line.len(), final_colour);
+
+    tui::text::Spans::from(spans)
 }
 
 // -------------------------------------------------------------------------------------------------

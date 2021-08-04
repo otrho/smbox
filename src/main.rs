@@ -1,5 +1,7 @@
 use std::io::BufRead;
+use std::io::Read;
 
+mod highlight;
 mod iface;
 mod mbox;
 
@@ -18,13 +20,15 @@ fn main() {
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
 fn smbox() -> std::io::Result<()> {
-    // Read lines as a vector of strings from the mbox path found in $MAIL.
+    let config = read_config().unwrap_or(String::new());
     let lines = read_lines(mbox::get_mbox_path()?)?;
     if lines.is_empty() {
         println!("No mail.");
     } else {
         let messages = mbox::parse_mbox(&lines);
-        let actions = iface::run(&lines, &messages)?;
+        let mut highlighter = highlight::load_highlighter(&config)
+            .map_err(|s| std::io::Error::new(std::io::ErrorKind::InvalidData, s))?;
+        let actions = iface::run(&lines, &messages, &mut highlighter)?;
 
         if !actions.is_empty() {
             let num_deleted_messages = perform_actions(&lines, &messages, actions)?;
@@ -47,6 +51,19 @@ fn read_lines(path: String) -> std::io::Result<Vec<String>> {
         lines.push(line?);
     }
     Ok(lines)
+}
+
+fn read_config() -> std::io::Result<String> {
+    let base_dirs = directories::BaseDirs::new().ok_or(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "Failed to determine config file path.",
+    ))?;
+    let mut config_file_path = base_dirs.config_dir().to_owned();
+    config_file_path.push("smbox.toml");
+
+    let mut config = String::new();
+    std::io::BufReader::new(std::fs::File::open(config_file_path)?).read_to_string(&mut config)?;
+    Ok(config)
 }
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
