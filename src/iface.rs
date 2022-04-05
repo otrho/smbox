@@ -21,7 +21,7 @@ pub fn run(
     let stdout = termion::screen::AlternateScreen::from(stdout);
     let stdin = std::io::stdin();
 
-    let mut terminal = tui::Terminal::new(tui::backend::TermionBackend::new(stdout))?;
+    let mut terminal = tui::Terminal::new(tui::backend::CrosstermBackend::new(stdout))?;
     let mut iface = IfaceState::new(lines, messages);
 
     iface.headers_state.select(Some(0));
@@ -64,7 +64,7 @@ struct IfaceState<'a> {
 
 // To simplify things a bit we're doubling down on just using a Termion backend.
 type IfaceTerminal = tui::terminal::Terminal<
-    tui::backend::TermionBackend<
+    tui::backend::CrosstermBackend<
         termion::screen::AlternateScreen<termion::raw::RawTerminal<std::io::Stdout>>,
     >,
 >;
