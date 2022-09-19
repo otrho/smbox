@@ -12,7 +12,7 @@ pub fn load_highlighter(toml_config: &str) -> Result<Highlighter, String> {
 
     let val_to_regex = |val: &toml::value::Value| match val {
         toml::value::Value::String(s) => {
-            regex::Regex::new(&s).expect(&format!("Invalid regex: {}", s))
+            regex::Regex::new(s).unwrap_or_else(|_| panic!("Invalid regex: {}", s))
         }
         _ => panic!("Expecting string regex value'."),
     };
@@ -42,14 +42,14 @@ pub fn load_highlighter(toml_config: &str) -> Result<Highlighter, String> {
                     let ctx_re = section
                         .get("re")
                         .map(val_to_regex)
-                        .expect(&format!("Missing 're' value for '{}' context.", ctx_id));
-                    let matchers = section
-                        .get("matchers")
-                        .map(val_to_matchers)
-                        .expect(&format!(
-                            "Missing 'matchers' value for '{}' context.",
-                            ctx_id
-                        ));
+                        .unwrap_or_else(|| panic!("Missing 're' value for '{}' context.", ctx_id));
+                    let matchers =
+                        section
+                            .get("matchers")
+                            .map(val_to_matchers)
+                            .unwrap_or_else(|| {
+                                panic!("Missing 'matchers' value for '{}' context.", ctx_id)
+                            });
                     ctx_matchers.push(HighlightContext {
                         ctx_re,
                         ctx_id,
@@ -100,7 +100,7 @@ impl Highlighter {
             }
         });
         if new_ctx.is_some() {
-            self.ctx = new_ctx.map(|id| id.clone());
+            self.ctx = new_ctx.cloned();
             return Highlights {
                 highlights: Vec::new(),
             };

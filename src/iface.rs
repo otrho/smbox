@@ -1,5 +1,9 @@
 use crate::highlight;
 
+use termion::{input::TermRead, raw::IntoRawMode};
+
+use std::io;
+
 // -------------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -9,17 +13,14 @@ pub enum Action {
 
 // -------------------------------------------------------------------------------------------------
 
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-
 pub fn run(
     lines: &Vec<String>,
     messages: &Vec<super::mbox::Message>,
     highlighter: &mut highlight::Highlighter,
-) -> std::io::Result<Vec<Action>> {
-    let stdout = std::io::stdout().into_raw_mode()?;
+) -> io::Result<Vec<Action>> {
+    let stdout = io::stdout().into_raw_mode()?;
     let stdout = termion::screen::AlternateScreen::from(stdout);
-    let stdin = std::io::stdin();
+    let stdin = io::stdin();
 
     let mut terminal = tui::Terminal::new(tui::backend::CrosstermBackend::new(stdout))?;
     let mut iface = IfaceState::new(lines, messages);
@@ -28,18 +29,19 @@ pub fn run(
     iface.draw(&mut terminal, highlighter)?;
 
     for inp_key in stdin.keys() {
+        use termion::event::Key;
         match inp_key? {
-            termion::event::Key::Char('q') => break,
-            termion::event::Key::Char('x') => {
+            Key::Char('q') => break,
+            Key::Char('x') => {
                 iface.clear_deleted_messages();
                 break;
             }
-            termion::event::Key::Char('j') => iface.increment_header_index(1),
-            termion::event::Key::Char('k') => iface.increment_header_index(-1),
-            termion::event::Key::Char(' ') => iface.increment_page(1),
-            termion::event::Key::Char('b') => iface.increment_page(-1),
-            termion::event::Key::Char('g') => iface.first_page(),
-            termion::event::Key::Char('d') => iface.delete_selected(),
+            Key::Char('j') => iface.increment_header_index(1),
+            Key::Char('k') => iface.increment_header_index(-1),
+            Key::Char(' ') => iface.increment_page(1),
+            Key::Char('b') => iface.increment_page(-1),
+            Key::Char('g') => iface.first_page(),
+            Key::Char('d') => iface.delete_selected(),
             _ => (),
         }
 
@@ -47,7 +49,7 @@ pub fn run(
     }
 
     Ok(iface
-        .deleted_messages_iter()
+        .deleted_messages()
         .map(|&idx| Action::DeleteMessage(idx))
         .collect())
 }
@@ -65,7 +67,7 @@ struct IfaceState<'a> {
 // To simplify things a bit we're doubling down on just using a Termion backend.
 type IfaceTerminal = tui::terminal::Terminal<
     tui::backend::CrosstermBackend<
-        termion::screen::AlternateScreen<termion::raw::RawTerminal<std::io::Stdout>>,
+        termion::screen::AlternateScreen<termion::raw::RawTerminal<io::Stdout>>,
     >,
 >;
 
@@ -108,7 +110,7 @@ impl<'a> IfaceState<'a> {
         self.deleted_messages.clear();
     }
 
-    fn deleted_messages_iter(&self) -> impl Iterator<Item = &i64> {
+    fn deleted_messages(&self) -> impl Iterator<Item = &i64> {
         self.deleted_messages.iter()
     }
 
@@ -116,17 +118,17 @@ impl<'a> IfaceState<'a> {
         &mut self,
         terminal: &mut IfaceTerminal,
         highlighter: &mut highlight::Highlighter,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
         let prepare_field = |line: &str, width: usize| {
-            let mut stripped = line.split(": ").nth(1).unwrap_or(&line).to_string();
+            let mut stripped = line.split(": ").nth(1).unwrap_or(line).to_string();
             stripped.truncate(width);
             format!("{:1$}", stripped, width)
         };
 
         // Another little lambda to truncate the date string.  We're expecting it in the form
         // 'Fri, 4 Sep 2020 11:44:49 +1000 (AEST)' and we'll just cut off the TZ stuff.
-        let reformat_date = |line: &'a str| line.split(" +").nth(0).unwrap_or(&line);
+        let reformat_date = |line: &'a str| line.split(" +").next().unwrap_or(line);
 
         terminal.draw(|frame| {
             // Split the screen, top 25% for message selection menu, bottom 75% for message text.
@@ -157,7 +159,7 @@ impl<'a> IfaceState<'a> {
                         // Make the date 20 chars, the from field 40 and the subject can be
                         // longer.
                         tui::text::Span::raw(prepare_field(
-                            &reformat_date(&self.lines[msg.date_idx as usize]),
+                            reformat_date(&self.lines[msg.date_idx as usize]),
                             25,
                         )),
                         tui::text::Span::raw(" | "),
@@ -185,7 +187,7 @@ impl<'a> IfaceState<'a> {
                 self.headers_state
                     .selected()
                     .map(|n| (n + 1).to_string())
-                    .unwrap_or("??".to_string()),
+                    .unwrap_or_else(|| "??".to_string()),
                 self.messages.len(),
             );
             frame.render_widget(
@@ -218,7 +220,10 @@ impl<'a> IfaceState<'a> {
 
 // -------------------------------------------------------------------------------------------------
 
-fn highlighted_line<'a>(highlighter: &mut highlight::Highlighter, line: &'a str) -> tui::text::Spans<'a> {
+fn highlighted_line<'a>(
+    highlighter: &mut highlight::Highlighter,
+    line: &'a str,
+) -> tui::text::Spans<'a> {
     let mut spans = Vec::<tui::text::Span>::new();
     let mut save_span = |start, end, colour| match colour {
         None => {

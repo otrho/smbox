@@ -1,5 +1,7 @@
-use std::io::BufRead;
-use std::io::Read;
+use std::{
+    io::{self, BufRead, BufReader, Read, Write},
+    os::unix::fs::PermissionsExt,
+};
 
 mod highlight;
 mod iface;
@@ -8,35 +10,38 @@ mod mbox;
 // -------------------------------------------------------------------------------------------------
 
 fn main() {
-    std::process::exit(match smbox() {
-        Ok(_) => 0,
-        Err(err) => {
-            println!("{}", err);
-            1
-        }
-    });
+    std::process::exit(smbox().map(|_| 0).unwrap_or_else(|err| {
+        println!("{}", err);
+        1
+    }));
 }
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn smbox() -> std::io::Result<()> {
-    let config = read_config().unwrap_or(String::new());
-    let lines = read_lines(mbox::get_mbox_path()?)?;
+fn smbox() -> io::Result<()> {
+    let mbox_file = std::fs::File::open(mbox::get_mbox_path()?)?;
+    let lines = BufReader::new(mbox_file)
+        .lines()
+        .collect::<io::Result<Vec<_>>>()?;
+
     if lines.is_empty() {
         println!("No mail.");
     } else {
+        let config = read_config().unwrap_or_default();
         let messages = mbox::parse_mbox(&lines);
         let mut highlighter = highlight::load_highlighter(&config)
-            .map_err(|s| std::io::Error::new(std::io::ErrorKind::InvalidData, s))?;
+            .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
         let actions = iface::run(&lines, &messages, &mut highlighter)?;
 
         if !actions.is_empty() {
-            let num_deleted_messages = perform_actions(&lines, &messages, actions)?;
-            if num_deleted_messages == messages.len() as i64 {
-                println!("Deleted all messages.");
-            } else if num_deleted_messages > 0 {
-                println!("Deleted {} message(s).", num_deleted_messages);
-            }
+            println!(
+                "{}",
+                match perform_actions(&lines, &messages, actions)? {
+                    n if n == messages.len() as i64 => "Deleted all messages.".to_owned(),
+                    1 => "Deleted message.".to_owned(),
+                    n => format!("Deleted {n} messages."),
+                }
+            );
         }
     }
     Ok(())
@@ -44,38 +49,28 @@ fn smbox() -> std::io::Result<()> {
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn read_lines(path: String) -> std::io::Result<Vec<String>> {
-    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    let mut lines = Vec::<String>::new();
-    for line in reader.lines() {
-        lines.push(line?);
-    }
-    Ok(lines)
-}
-
-fn read_config() -> std::io::Result<String> {
-    let base_dirs = directories::BaseDirs::new().ok_or(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "Failed to determine config file path.",
-    ))?;
+fn read_config() -> io::Result<String> {
+    let base_dirs = directories::BaseDirs::new().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Failed to determine config file path.",
+        )
+    })?;
     let mut config_file_path = base_dirs.config_dir().to_owned();
     config_file_path.push("smbox.toml");
 
     let mut config = String::new();
-    std::io::BufReader::new(std::fs::File::open(config_file_path)?).read_to_string(&mut config)?;
+    io::BufReader::new(std::fs::File::open(config_file_path)?).read_to_string(&mut config)?;
     Ok(config)
 }
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
-
 fn perform_actions(
-    lines: &Vec<String>,
+    lines: &[String],
     messages: &Vec<mbox::Message>,
     actions: Vec<iface::Action>,
-) -> std::io::Result<i64> {
+) -> io::Result<i64> {
     // Right now we only support DeleteMessage actions.  We should get a compile error about
     // non-exhaustive pattern matches if/when there are other actions introducted in the future.
     assert!(actions.iter().all(|action| match action {

@@ -16,7 +16,6 @@ between.
   * Can read from `$MAIL` and display messages using a basic TUI.
   * Can delete messages.
   * Can highlight sections of the email bodies using regular expressions.
-  * Is written in Rust..!
 
 ## Caveats
   * Barely tested though I use it every day.
