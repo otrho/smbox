@@ -1,21 +1,23 @@
-use crate::highlight;
+use crate::{highlight, mbox};
 
 use termion::{input::TermRead, raw::IntoRawMode};
 
 use std::io;
 
+const COL_GREY_IDX: u8 = 236;
+const COL_GREEN_IDX: u8 = 71;
+
 // -------------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub enum Action {
-    DeleteMessage(i64),
+    DeleteMessage(usize),
 }
 
 // -------------------------------------------------------------------------------------------------
 
 pub fn run(
-    lines: &Vec<String>,
-    messages: &Vec<super::mbox::Message>,
+    messages: &mbox::Mbox,
     highlighter: &mut highlight::Highlighter,
 ) -> io::Result<Vec<Action>> {
     let stdout = io::stdout().into_raw_mode()?;
@@ -23,7 +25,7 @@ pub fn run(
     let stdin = io::stdin();
 
     let mut terminal = tui::Terminal::new(tui::backend::CrosstermBackend::new(stdout))?;
-    let mut iface = IfaceState::new(lines, messages);
+    let mut iface = IfaceState::new(messages);
 
     iface.headers_state.select(Some(0));
     iface.draw(&mut terminal, highlighter)?;
@@ -50,18 +52,17 @@ pub fn run(
 
     Ok(iface
         .deleted_messages()
-        .map(|&idx| Action::DeleteMessage(idx))
+        .map(|&idx| Action::DeleteMessage(idx as usize))
         .collect())
 }
 
 // -------------------------------------------------------------------------------------------------
 
 struct IfaceState<'a> {
-    lines: &'a Vec<String>,
-    messages: &'a Vec<super::mbox::Message>,
+    mbox: &'a mbox::Mbox,
     headers_state: tui::widgets::ListState,
     body_page_idx: i64,
-    deleted_messages: std::collections::BTreeSet<i64>,
+    deleted_messages: std::collections::BTreeSet<usize>,
 }
 
 // To simplify things a bit we're doubling down on just using a Termion backend.
@@ -72,10 +73,9 @@ type IfaceTerminal = tui::terminal::Terminal<
 >;
 
 impl<'a> IfaceState<'a> {
-    fn new(lines: &'a Vec<String>, messages: &'a Vec<super::mbox::Message>) -> IfaceState<'a> {
+    fn new(mbox: &'a mbox::Mbox) -> IfaceState<'a> {
         IfaceState {
-            lines,
-            messages,
+            mbox,
             headers_state: tui::widgets::ListState::default(),
             body_page_idx: 0,
             deleted_messages: std::collections::BTreeSet::new(),
@@ -85,7 +85,7 @@ impl<'a> IfaceState<'a> {
     fn increment_header_index(&mut self, delta: i64) {
         let idx = self.headers_state.selected().unwrap_or(0) as i64 + delta;
         let idx = std::cmp::max(idx, 0);
-        let idx = std::cmp::min(idx, self.messages.len() as i64 - 1);
+        let idx = std::cmp::min(idx, self.mbox.count() as i64 - 1);
         self.headers_state.select(Some(idx as usize));
         self.body_page_idx = 0;
     }
@@ -101,7 +101,7 @@ impl<'a> IfaceState<'a> {
 
     fn delete_selected(&mut self) {
         if let Some(idx) = self.headers_state.selected() {
-            self.deleted_messages.insert(idx as i64);
+            self.deleted_messages.insert(idx);
             self.increment_header_index(1);
         }
     }
@@ -110,7 +110,7 @@ impl<'a> IfaceState<'a> {
         self.deleted_messages.clear();
     }
 
-    fn deleted_messages(&self) -> impl Iterator<Item = &i64> {
+    fn deleted_messages(&self) -> impl Iterator<Item = &usize> {
         self.deleted_messages.iter()
     }
 
@@ -136,7 +136,7 @@ impl<'a> IfaceState<'a> {
                 .direction(tui::layout::Direction::Vertical)
                 .constraints(
                     [
-                        tui::layout::Constraint::Max(self.messages.len() as u16),
+                        tui::layout::Constraint::Max(self.mbox.count() as u16),
                         tui::layout::Constraint::Length(1),
                         tui::layout::Constraint::Percentage(75),
                     ]
@@ -145,28 +145,35 @@ impl<'a> IfaceState<'a> {
                 .split(frame.size());
 
             // Gather info from the message headers for the selection menu items.
-            let headers: Vec<tui::widgets::ListItem> = self
-                .messages
-                .iter()
-                .enumerate()
-                .map(|(idx, msg)| {
+            let headers: Vec<tui::widgets::ListItem> = (0..self.mbox.count())
+                .map(|msg_idx| {
                     tui::widgets::ListItem::new(tui::text::Spans::from(vec![
-                        tui::text::Span::raw(if self.deleted_messages.contains(&(idx as i64)) {
+                        tui::text::Span::raw(if self.deleted_messages.contains(&msg_idx) {
                             "D "
                         } else {
                             "  "
                         }),
-                        // Make the date 20 chars, the from field 40 and the subject can be
+                        // Make the date 25 chars, the from field 40 and the subject can be
                         // longer.
                         tui::text::Span::raw(prepare_field(
-                            reformat_date(&self.lines[msg.date_idx as usize]),
+                            self.mbox
+                                .field_at(msg_idx, mbox::FieldType::Date)
+                                .map(reformat_date)
+                                .unwrap_or("???"),
                             25,
                         )),
                         tui::text::Span::raw(" | "),
-                        tui::text::Span::raw(prepare_field(&self.lines[msg.from_idx as usize], 40)),
+                        tui::text::Span::raw(prepare_field(
+                            self.mbox
+                                .field_at(msg_idx, mbox::FieldType::From)
+                                .unwrap_or("???"),
+                            40,
+                        )),
                         tui::text::Span::raw(" | "),
                         tui::text::Span::raw(prepare_field(
-                            &self.lines[msg.subject_idx as usize],
+                            self.mbox
+                                .field_at(msg_idx, mbox::FieldType::Subject)
+                                .unwrap_or("???"),
                             80, // XXX Should be at least to screen width.
                         )),
                     ]))
@@ -177,7 +184,7 @@ impl<'a> IfaceState<'a> {
                 .highlight_style(
                     tui::style::Style::default()
                         .fg(tui::style::Color::White)
-                        .bg(tui::style::Color::Indexed(236)), // Grey.
+                        .bg(tui::style::Color::Indexed(COL_GREY_IDX)),
                 );
             frame.render_stateful_widget(headers, chunks[0], &mut self.headers_state);
 
@@ -188,18 +195,22 @@ impl<'a> IfaceState<'a> {
                     .selected()
                     .map(|n| (n + 1).to_string())
                     .unwrap_or_else(|| "??".to_string()),
-                self.messages.len(),
+                self.mbox.count(),
             );
             frame.render_widget(
-                tui::widgets::Paragraph::new(tui::text::Span::raw(info_text))
-                    .style(tui::style::Style::default().fg(tui::style::Color::Indexed(71))), // Green.
+                tui::widgets::Paragraph::new(tui::text::Span::raw(info_text)).style(
+                    tui::style::Style::default().fg(tui::style::Color::Indexed(COL_GREEN_IDX)),
+                ),
                 chunks[1],
             );
 
             // Put the message lines into a paragraph for the bottom window.
-            let message = &self.messages[self.headers_state.selected().unwrap_or(0)];
-            let message_text: Vec<tui::text::Spans> = (message.body_idx..message.end_idx)
-                .map(|line_idx| highlighted_line(highlighter, &self.lines[line_idx as usize]))
+            let message_text: Vec<tui::text::Spans> = self
+                .mbox
+                .body_lines(self.headers_state.selected().unwrap_or(0))
+                .unwrap_or(&[])
+                .iter()
+                .map(|line| highlighted_line(highlighter, line))
                 .collect();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a

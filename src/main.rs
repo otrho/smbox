@@ -28,16 +28,16 @@ fn smbox() -> io::Result<()> {
         println!("No mail.");
     } else {
         let config = read_config().unwrap_or_default();
-        let messages = mbox::parse_mbox(&lines);
+        let messages = mbox::Mbox::from_lines(lines);
         let mut highlighter = highlight::load_highlighter(&config)
             .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
-        let actions = iface::run(&lines, &messages, &mut highlighter)?;
+        let actions = iface::run(&messages, &mut highlighter)?;
 
         if !actions.is_empty() {
             println!(
                 "{}",
-                match perform_actions(&lines, &messages, actions)? {
-                    n if n == messages.len() as i64 => "Deleted all messages.".to_owned(),
+                match perform_actions(&messages, actions)? {
+                    n if n == messages.count() as i64 => "Deleted all messages.".to_owned(),
                     1 => "Deleted message.".to_owned(),
                     n => format!("Deleted {n} messages."),
                 }
@@ -66,18 +66,14 @@ fn read_config() -> io::Result<String> {
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn perform_actions(
-    lines: &[String],
-    messages: &Vec<mbox::Message>,
-    actions: Vec<iface::Action>,
-) -> io::Result<i64> {
+fn perform_actions(mbox: &mbox::Mbox, actions: Vec<iface::Action>) -> io::Result<i64> {
     // Right now we only support DeleteMessage actions.  We should get a compile error about
     // non-exhaustive pattern matches if/when there are other actions introducted in the future.
     assert!(actions.iter().all(|action| match action {
         iface::Action::DeleteMessage(_) => true,
     }));
 
-    let message_is_deleted = |idx: i64| {
+    let message_is_deleted = |idx: usize| {
         actions.iter().any(|action| match action {
             iface::Action::DeleteMessage(del_idx) => idx == *del_idx,
         })
@@ -96,15 +92,15 @@ fn perform_actions(
 
             // If the number of deletions is the number of messages then we are deleting all messages and
             // don't need to write to the new mbox file at all.
-            if actions.len() < messages.len() {
+            if actions.len() < mbox.count() {
                 // Write the messages we're keeping.
-                for (idx, msg) in messages.iter().enumerate() {
-                    if !message_is_deleted(idx as i64) {
-                        for line_idx in msg.start_idx..msg.end_idx {
+                for msg_idx in 0..mbox.count() {
+                    if !message_is_deleted(msg_idx) {
+                        for line in mbox.all_lines(msg_idx).unwrap_or(&[]).iter() {
                             // I'm not 100% happy with this.  Perhaps writing the line with
                             // std::fs::File::write() and then writing the newline separately would
                             // be better?
-                            std::writeln!(temp_mbox_file, "{}", lines[line_idx as usize])?;
+                            std::writeln!(temp_mbox_file, "{line}")?;
                         }
                     }
                 }

@@ -7,9 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-termion = "1"
-tui = "0"
+directories = "4"
+itertools = "0"
 mktemp = "0"
 regex = "1"
-directories = "4"
+termion = "1"
 toml = "0"
+tui = "0"
