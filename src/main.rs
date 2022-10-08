@@ -29,6 +29,7 @@ fn smbox() -> io::Result<()> {
     } else {
         let config = read_config().unwrap_or_default();
         let messages = mbox::Mbox::from_lines(lines);
+
         let mut highlighter = highlight::load_highlighter(&config)
             .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
         let actions = iface::run(&messages, &mut highlighter)?;
@@ -94,9 +95,9 @@ fn perform_actions(mbox: &mbox::Mbox, actions: Vec<iface::Action>) -> io::Result
             // don't need to write to the new mbox file at all.
             if actions.len() < mbox.count() {
                 // Write the messages we're keeping.
-                for msg_idx in 0..mbox.count() {
-                    if !message_is_deleted(msg_idx) {
-                        for line in mbox.all_lines(msg_idx).unwrap_or(&[]).iter() {
+                for (idx, msg) in mbox.iter().enumerate() {
+                    if !message_is_deleted(idx) {
+                        for line in msg.all_lines().iter() {
                             // I'm not 100% happy with this.  Perhaps writing the line with
                             // std::fs::File::write() and then writing the newline separately would
                             // be better?

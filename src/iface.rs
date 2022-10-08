@@ -145,10 +145,13 @@ impl<'a> IfaceState<'a> {
                 .split(frame.size());
 
             // Gather info from the message headers for the selection menu items.
-            let headers: Vec<tui::widgets::ListItem> = (0..self.mbox.count())
-                .map(|msg_idx| {
+            let headers: Vec<tui::widgets::ListItem> = self
+                .mbox
+                .iter()
+                .enumerate()
+                .map(|(idx, msg)| {
                     tui::widgets::ListItem::new(tui::text::Spans::from(vec![
-                        tui::text::Span::raw(if self.deleted_messages.contains(&msg_idx) {
+                        tui::text::Span::raw(if self.deleted_messages.contains(&idx) {
                             "D "
                         } else {
                             "  "
@@ -156,24 +159,19 @@ impl<'a> IfaceState<'a> {
                         // Make the date 25 chars, the from field 40 and the subject can be
                         // longer.
                         tui::text::Span::raw(prepare_field(
-                            self.mbox
-                                .field_at(msg_idx, mbox::FieldType::Date)
+                            msg.field(mbox::FieldType::Date)
                                 .map(reformat_date)
                                 .unwrap_or("???"),
                             25,
                         )),
                         tui::text::Span::raw(" | "),
                         tui::text::Span::raw(prepare_field(
-                            self.mbox
-                                .field_at(msg_idx, mbox::FieldType::From)
-                                .unwrap_or("???"),
+                            msg.field(mbox::FieldType::From).unwrap_or("???"),
                             40,
                         )),
                         tui::text::Span::raw(" | "),
                         tui::text::Span::raw(prepare_field(
-                            self.mbox
-                                .field_at(msg_idx, mbox::FieldType::Subject)
-                                .unwrap_or("???"),
+                            msg.field(mbox::FieldType::Subject).unwrap_or("???"),
                             80, // XXX Should be at least to screen width.
                         )),
                     ]))
@@ -205,13 +203,17 @@ impl<'a> IfaceState<'a> {
             );
 
             // Put the message lines into a paragraph for the bottom window.
-            let message_text: Vec<tui::text::Spans> = self
+            let message_text: Vec<tui::text::Spans<'a>> = self
                 .mbox
-                .body_lines(self.headers_state.selected().unwrap_or(0))
-                .unwrap_or(&[])
-                .iter()
-                .map(|line| highlighted_line(highlighter, line))
-                .collect();
+                .msg_at(self.headers_state.selected().unwrap_or(0))
+                .map(|msg| {
+                    msg.body_lines()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|line| highlighted_line(highlighter, line))
+                        .collect()
+                })
+                .unwrap_or(Vec::new());
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
             // page based on the lower chunk size.  Instead we'll just go with 75% of the height.

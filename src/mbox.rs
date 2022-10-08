@@ -87,32 +87,81 @@ impl Mbox {
         self.messages.len()
     }
 
-    pub(crate) fn field_at(&self, message_idx: usize, field: FieldType) -> Option<&str> {
-        self.messages
-            .get(message_idx)
-            .and_then(|msg| {
-                msg.field_idcs
-                    .get(&field)
-                    .map(|local_idx| msg.start_idx + local_idx)
-            })
-            .map(|field_idx| self.lines[field_idx].as_str())
+    pub(crate) fn msg_at(&self, idx: usize) -> Option<MessageCursor> {
+        (idx < self.messages.len()).then_some(MessageCursor::new(&self.messages[idx], &self.lines))
     }
 
-    pub(crate) fn all_lines(&self, message_idx: usize) -> Option<&[String]> {
-        self.messages
-            .get(message_idx)
-            .map(|msg| &self.lines[msg.start_idx..msg.end_idx])
+    pub(crate) fn iter(&self) -> Iter {
+        Iter::new(self)
     }
 
-    pub(crate) fn body_lines(&self, message_idx: usize) -> Option<&[String]> {
-        self.messages
-            .get(message_idx)
-            .and_then(|msg| {
-                msg.field_idcs
-                    .get(&FieldType::Body)
-                    .map(|body_idx| (msg.start_idx + *body_idx, msg.end_idx))
-            })
-            .map(|(begin_idx, end_idx)| &self.lines[begin_idx..end_idx])
+//    pub(crate) fn iter_mut(&mut self) -> IterMut {
+//        IterMut::new(self)
+//    }
+}
+
+// -------------------------------------------------------------------------------------------------
+
+pub(crate) struct Iter<'a> {
+    mbox: &'a Mbox,
+    idx: usize,
+}
+
+impl<'a> Iter<'a> {
+    fn new(mbox: &'a Mbox) -> Self {
+        Iter { mbox, idx: 0 }
+    }
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = MessageCursor<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        (self.idx < self.mbox.count()).then(|| {
+            let item = MessageCursor::new(&self.mbox.messages[self.idx], &self.mbox.lines);
+            self.idx += 1;
+            item
+        })
+    }
+}
+
+//pub(crate) struct IterMut<'a> {
+//    mbox: &'a mut Mbox,
+//    idx: usize,
+//}
+
+//impl<'a> IterMut<'a> {
+//    fn new(mbox: &'a mut Mbox) -> Self {
+//        todo!()
+//    }
+//}
+
+pub(crate) struct MessageCursor<'a> {
+    msg: &'a Message,
+    lines: &'a [String],
+}
+
+impl<'a> MessageCursor<'a> {
+    fn new(msg: &'a Message, lines: &'a [String]) -> Self {
+        MessageCursor { msg, lines }
+    }
+
+    pub(crate) fn field(&self, field: FieldType) -> Option<&'a str> {
+        self.msg
+            .field_idcs
+            .get(&field)
+            .map(|local_idx| self.lines[self.msg.start_idx + local_idx].as_str())
+    }
+
+    pub(crate) fn all_lines(&self) -> &'a [String] {
+        &self.lines[self.msg.start_idx..self.msg.end_idx]
+    }
+
+    pub(crate) fn body_lines(&self) -> Option<&'a [String]> {
+        self.msg
+            .field_idcs
+            .get(&FieldType::Body)
+            .map(|body_idx| &self.lines[(self.msg.start_idx + *body_idx)..self.msg.end_idx])
     }
 }
 
