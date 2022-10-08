@@ -213,7 +213,7 @@ impl<'a> IfaceState<'a> {
                         .map(|line| highlighted_line(highlighter, line))
                         .collect()
                 })
-                .unwrap_or(Vec::new());
+                .unwrap_or_default();
 
             // It doesn't seem to be possible to get the size of a Layout -- we'd like to choose a
             // page based on the lower chunk size.  Instead we'll just go with 75% of the height.
