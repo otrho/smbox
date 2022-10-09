@@ -9,17 +9,10 @@ const COL_GREEN_IDX: u8 = 71;
 
 // -------------------------------------------------------------------------------------------------
 
-#[derive(Debug)]
-pub enum Action {
-    DeleteMessage(usize),
-}
-
-// -------------------------------------------------------------------------------------------------
-
-pub fn run(
-    messages: &mbox::Mbox,
+pub(crate) fn run(
+    messages: mbox::Mbox,
     highlighter: &mut highlight::Highlighter,
-) -> io::Result<Vec<Action>> {
+) -> io::Result<Option<mbox::Mbox>> {
     let stdout = io::stdout().into_raw_mode()?;
     let stdout = termion::screen::AlternateScreen::from(stdout);
     let stdin = io::stdin();
@@ -28,41 +21,35 @@ pub fn run(
     let mut iface = IfaceState::new(messages);
 
     iface.headers_state.select(Some(0));
+    iface.mark_selected_read();
     iface.draw(&mut terminal, highlighter)?;
 
-    for inp_key in stdin.keys() {
+    let mut key_events = stdin.keys();
+    loop {
         use termion::event::Key;
-        match inp_key? {
-            Key::Char('q') => break,
-            Key::Char('x') => {
-                iface.clear_deleted_messages();
-                break;
-            }
+        match key_events.next().expect("Endless keys...")? {
+            Key::Char('q') => break Ok(Some(iface.messages())),
+            Key::Char('x') => break Ok(None),
             Key::Char('j') => iface.increment_header_index(1),
             Key::Char('k') => iface.increment_header_index(-1),
             Key::Char(' ') => iface.increment_page(1),
             Key::Char('b') => iface.increment_page(-1),
             Key::Char('g') => iface.first_page(),
-            Key::Char('d') => iface.delete_selected(),
+            Key::Char('d') => iface.mark_selected_deleted(),
             _ => (),
         }
 
+        iface.mark_selected_read();
         iface.draw(&mut terminal, highlighter)?;
     }
-
-    Ok(iface
-        .deleted_messages()
-        .map(|&idx| Action::DeleteMessage(idx as usize))
-        .collect())
 }
 
 // -------------------------------------------------------------------------------------------------
 
-struct IfaceState<'a> {
-    mbox: &'a mbox::Mbox,
+struct IfaceState {
+    mbox: mbox::Mbox,
     headers_state: tui::widgets::ListState,
     body_page_idx: i64,
-    deleted_messages: std::collections::BTreeSet<usize>,
 }
 
 // To simplify things a bit we're doubling down on just using a Termion backend.
@@ -72,14 +59,17 @@ type IfaceTerminal = tui::terminal::Terminal<
     >,
 >;
 
-impl<'a> IfaceState<'a> {
-    fn new(mbox: &'a mbox::Mbox) -> IfaceState<'a> {
+impl IfaceState {
+    fn new(mbox: mbox::Mbox) -> IfaceState {
         IfaceState {
             mbox,
             headers_state: tui::widgets::ListState::default(),
             body_page_idx: 0,
-            deleted_messages: std::collections::BTreeSet::new(),
         }
+    }
+
+    fn messages(self) -> mbox::Mbox {
+        self.mbox
     }
 
     fn increment_header_index(&mut self, delta: i64) {
@@ -99,19 +89,21 @@ impl<'a> IfaceState<'a> {
         self.body_page_idx = 0;
     }
 
-    fn delete_selected(&mut self) {
+    fn mark_selected_read(&mut self) {
         if let Some(idx) = self.headers_state.selected() {
-            self.deleted_messages.insert(idx);
-            self.increment_header_index(1);
+            if let Some(msg) = self.mbox.msg_at_mut(idx) {
+                msg.set_status(mbox::Status::Read);
+            }
         }
     }
 
-    fn clear_deleted_messages(&mut self) {
-        self.deleted_messages.clear();
-    }
-
-    fn deleted_messages(&self) -> impl Iterator<Item = &usize> {
-        self.deleted_messages.iter()
+    fn mark_selected_deleted(&mut self) {
+        if let Some(idx) = self.headers_state.selected() {
+            if let Some(msg) = self.mbox.msg_at_mut(idx) {
+                msg.set_status(mbox::Status::Deleted);
+            }
+            self.increment_header_index(1);
+        }
     }
 
     fn draw(
@@ -125,10 +117,6 @@ impl<'a> IfaceState<'a> {
             stripped.truncate(width);
             format!("{:1$}", stripped, width)
         };
-
-        // Another little lambda to truncate the date string.  We're expecting it in the form
-        // 'Fri, 4 Sep 2020 11:44:49 +1000 (AEST)' and we'll just cut off the TZ stuff.
-        let reformat_date = |line: &'a str| line.split(" +").next().unwrap_or(line);
 
         terminal.draw(|frame| {
             // Split the screen, top 25% for message selection menu, bottom 75% for message text.
@@ -148,19 +136,33 @@ impl<'a> IfaceState<'a> {
             let headers: Vec<tui::widgets::ListItem> = self
                 .mbox
                 .iter()
-                .enumerate()
-                .map(|(idx, msg)| {
+                .map(|msg| {
                     tui::widgets::ListItem::new(tui::text::Spans::from(vec![
-                        tui::text::Span::raw(if self.deleted_messages.contains(&idx) {
-                            "D "
-                        } else {
-                            "  "
-                        }),
+                        tui::text::Span::raw(format!(
+                            "{}{} ",
+                            if msg.has_status(mbox::Status::Deleted) {
+                                "D"
+                            } else {
+                                " "
+                            },
+                            if msg.has_status(mbox::Status::Read) {
+                                " "
+                            } else if msg.has_status(mbox::Status::NonRecent) {
+                                "U"
+                            } else {
+                                "N"
+                            },
+                        )),
                         // Make the date 25 chars, the from field 40 and the subject can be
                         // longer.
                         tui::text::Span::raw(prepare_field(
                             msg.field(mbox::FieldType::Date)
-                                .map(reformat_date)
+                                .map(|line| {
+                                    // Truncate the date string.  We're expecting it in the form
+                                    // 'Fri, 4 Sep 2020 11:44:49 +1000 (AEST)' and we'll just cut
+                                    // off the TZ stuff.
+                                    line.split(" +").next().unwrap_or(line)
+                                })
                                 .unwrap_or("???"),
                             25,
                         )),
@@ -203,7 +205,7 @@ impl<'a> IfaceState<'a> {
             );
 
             // Put the message lines into a paragraph for the bottom window.
-            let message_text: Vec<tui::text::Spans<'a>> = self
+            let message_text: Vec<tui::text::Spans> = self
                 .mbox
                 .msg_at(self.headers_state.selected().unwrap_or(0))
                 .map(|msg| {

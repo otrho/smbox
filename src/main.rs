@@ -1,5 +1,6 @@
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
+    iter::FromIterator,
     os::unix::fs::PermissionsExt,
 };
 
@@ -28,23 +29,27 @@ fn smbox() -> io::Result<()> {
         println!("No mail.");
     } else {
         let config = read_config().unwrap_or_default();
-        let messages = mbox::Mbox::from_lines(lines);
+        let messages = mbox::Mbox::from_iter(lines.into_iter());
 
         let mut highlighter = highlight::load_highlighter(&config)
             .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
-        let actions = iface::run(&messages, &mut highlighter)?;
 
-        if !actions.is_empty() {
+        if let Some(mut updated_messages) = iface::run(messages, &mut highlighter)? {
+            for msg in updated_messages.iter_mut() {
+                msg.set_status(mbox::Status::NonRecent);
+            }
+
             println!(
                 "{}",
-                match perform_actions(&messages, actions)? {
-                    n if n == messages.count() as i64 => "Deleted all messages.".to_owned(),
-                    1 => "Deleted message.".to_owned(),
+                match write_mbox(&updated_messages)? {
+                    n if n == updated_messages.count() as i64 => "Deleted all messages.".to_owned(),
+                    1 => "Deleted 1 message.".to_owned(),
                     n => format!("Deleted {n} messages."),
                 }
             );
         }
     }
+
     Ok(())
 }
 
@@ -67,20 +72,9 @@ fn read_config() -> io::Result<String> {
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn perform_actions(mbox: &mbox::Mbox, actions: Vec<iface::Action>) -> io::Result<i64> {
-    // Right now we only support DeleteMessage actions.  We should get a compile error about
-    // non-exhaustive pattern matches if/when there are other actions introducted in the future.
-    assert!(actions.iter().all(|action| match action {
-        iface::Action::DeleteMessage(_) => true,
-    }));
-
-    let message_is_deleted = |idx: usize| {
-        actions.iter().any(|action| match action {
-            iface::Action::DeleteMessage(del_idx) => idx == *del_idx,
-        })
-    };
-
+fn write_mbox(mbox: &mbox::Mbox) -> io::Result<i64> {
     // Create a replacement mbox file with remaining messages.
+    let mut num_deleted_messages = 0;
     {
         let temp_mbox_file_path = mktemp::Temp::new_file()?;
         {
@@ -91,19 +85,14 @@ fn perform_actions(mbox: &mbox::Mbox, actions: Vec<iface::Action>) -> io::Result
             // Make sure the permissions are rw------- even though that seems to be the default.
             temp_mbox_file.metadata()?.permissions().set_mode(0o600);
 
-            // If the number of deletions is the number of messages then we are deleting all messages and
-            // don't need to write to the new mbox file at all.
-            if actions.len() < mbox.count() {
-                // Write the messages we're keeping.
-                for (idx, msg) in mbox.iter().enumerate() {
-                    if !message_is_deleted(idx) {
-                        for line in msg.all_lines().iter() {
-                            // I'm not 100% happy with this.  Perhaps writing the line with
-                            // std::fs::File::write() and then writing the newline separately would
-                            // be better?
-                            std::writeln!(temp_mbox_file, "{line}")?;
-                        }
+            // Write the messages we're keeping.
+            for msg in mbox.iter() {
+                if !msg.has_status(mbox::Status::Deleted) {
+                    for line in msg.all_lines().iter() {
+                        std::writeln!(temp_mbox_file, "{line}")?;
                     }
+                } else {
+                    num_deleted_messages += 1;
                 }
             }
         }
@@ -111,10 +100,7 @@ fn perform_actions(mbox: &mbox::Mbox, actions: Vec<iface::Action>) -> io::Result
         std::fs::copy(temp_mbox_file_path, mbox::get_mbox_path()?)?;
     }
 
-    // While we only have a delete action and no others we can assume number of deleted messages is
-    // the number of actions.
-    let num_deleted_msgs = actions.len() as i64;
-    Ok(num_deleted_msgs)
+    Ok(num_deleted_messages)
 }
 
 // -------------------------------------------------------------------------------------------------

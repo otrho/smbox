@@ -1,6 +1,4 @@
-use std::{collections::HashMap, io, iter::once};
-
-use itertools::Itertools;
+use std::{collections::HashMap, io, iter::FromIterator};
 
 // -------------------------------------------------------------------------------------------------
 
@@ -34,20 +32,86 @@ pub enum FieldType {
     Body, // Not a field, but... kinda.
 }
 
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Status {
+    Read,
+    NonRecent,
+    Deleted,
+}
+
+impl Status {
+    pub(crate) fn field_char(&self) -> char {
+        match self {
+            Status::Read => 'R',
+            Status::NonRecent => 'O',
+            Status::Deleted => 'D',
+        }
+    }
+}
+
 #[derive(Debug)]
-struct Message {
-    start_idx: usize,
-    end_idx: usize, // Index to line *after* last line in message.
+pub(crate) struct Message {
+    lines: Vec<String>,
     field_idcs: HashMap<FieldType, usize>,
 }
 
 impl Message {
-    fn new(start_idx: usize, end_idx: usize, field_idcs: HashMap<FieldType, usize>) -> Self {
-        Message {
-            start_idx,
-            end_idx,
-            field_idcs,
+    fn new(lines: Vec<String>, field_idcs: HashMap<FieldType, usize>) -> Self {
+        Message { lines, field_idcs }
+    }
+
+    pub(crate) fn field(&self, field: FieldType) -> Option<&str> {
+        self.field_idcs
+            .get(&field)
+            .map(|idx| self.lines[*idx].as_str())
+    }
+
+    pub(crate) fn has_status(&self, status: Status) -> bool {
+        self.field(FieldType::Status)
+            .map(|line| line.contains(status.field_char()))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn set_status(&mut self, status: Status) {
+        match self.field_idcs.get(&FieldType::Status) {
+            Some(idx) => {
+                // Append the status char if it isn't already there.
+                let line = &mut self.lines[*idx];
+                if !line.contains(status.field_char()) {
+                    line.push(status.field_char());
+                }
+            }
+            None => {
+                // Create a new status field line and insert it.  We put it at the end of the
+                // headers, right before the blank line before the body.
+                if let Some(body_idx) = self.field_idcs.get_mut(&FieldType::Body) {
+                    let status_idx = *body_idx - 1;
+                    *body_idx += 1;
+                    self.lines
+                        .insert(status_idx, format!("Status: {}", status.field_char()));
+                    self.field_idcs.insert(FieldType::Status, status_idx);
+                }
+            }
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn unset_status(&mut self, status: Status) {
+        if let Some(idx) = self.field_idcs.get(&FieldType::Status) {
+            // The status field has a 'Status: ' prefix, but thankfully none of the field chars (R,
+            // O, D) are in it, so we can filter the entire line.
+            self.lines[*idx].retain(|ch| ch != status.field_char());
+        }
+    }
+
+    pub(crate) fn all_lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    pub(crate) fn body_lines(&self) -> Option<&[String]> {
+        self.field_idcs
+            .get(&FieldType::Body)
+            .map(|body_idx| &self.lines[*body_idx..])
     }
 }
 
@@ -55,113 +119,58 @@ impl Message {
 
 #[derive(Debug)]
 pub struct Mbox {
-    lines: Vec<String>,
     messages: Vec<Message>,
 }
 
-impl Mbox {
-    pub fn from_lines(mbox_lines: Vec<String>) -> Self {
+impl FromIterator<String> for Mbox {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
         let field_parser = FieldsParser::default();
-        let messages = mbox_lines
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, line)| line.starts_with("From ").then_some(idx))
-            .chain(once(mbox_lines.len()))
-            .tuple_windows()
-            .map(|(start_idx, end_idx)| {
-                Message::new(
-                    start_idx,
-                    end_idx,
-                    field_parser.gather_fields(&mbox_lines[start_idx..end_idx]),
-                )
-            })
-            .collect::<Vec<_>>();
 
-        Mbox {
-            lines: mbox_lines,
-            messages,
-        }
+        let mut messages = Vec::new();
+        let mut save_message = |lines: Vec<String>| {
+            if !lines.is_empty() {
+                let fields = field_parser.gather_fields(&lines);
+                messages.push(Message::new(lines, fields));
+            }
+        };
+
+        let last_lines = iter.into_iter().fold(Vec::new(), |mut lines, line| {
+            if line.starts_with("From ") {
+                // Save the old message.
+                save_message(lines);
+
+                // Start saving new set of lines.
+                vec![line]
+            } else {
+                lines.push(line);
+                lines
+            }
+        });
+        save_message(last_lines);
+
+        Mbox { messages }
     }
+}
 
+impl Mbox {
     pub(crate) fn count(&self) -> usize {
         self.messages.len()
     }
 
-    pub(crate) fn msg_at(&self, idx: usize) -> Option<MessageCursor> {
-        (idx < self.messages.len()).then_some(MessageCursor::new(&self.messages[idx], &self.lines))
+    pub(crate) fn msg_at(&self, idx: usize) -> Option<&Message> {
+        (idx < self.messages.len()).then_some(&self.messages[idx])
     }
 
-    pub(crate) fn iter(&self) -> Iter {
-        Iter::new(self)
+    pub(crate) fn msg_at_mut(&mut self, idx: usize) -> Option<&mut Message> {
+        (idx < self.messages.len()).then_some(&mut self.messages[idx])
     }
 
-    //pub(crate) fn iter_mut(&mut self) -> IterMut {
-    //    IterMut::new(self)
-    //}
-}
-
-// -------------------------------------------------------------------------------------------------
-
-pub(crate) struct Iter<'a> {
-    mbox: &'a Mbox,
-    idx: usize,
-}
-
-impl<'a> Iter<'a> {
-    fn new(mbox: &'a Mbox) -> Self {
-        Iter { mbox, idx: 0 }
-    }
-}
-
-impl<'a> Iterator for Iter<'a> {
-    type Item = MessageCursor<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        (self.idx < self.mbox.count()).then(|| {
-            let item = MessageCursor::new(&self.mbox.messages[self.idx], &self.mbox.lines);
-            self.idx += 1;
-            item
-        })
-    }
-}
-
-//pub(crate) struct IterMut<'a> {
-//    mbox: &'a mut Mbox,
-//    idx: usize,
-//}
-
-//impl<'a> IterMut<'a> {
-//    fn new(mbox: &'a mut Mbox) -> Self {
-//        todo!()
-//    }
-//}
-
-pub(crate) struct MessageCursor<'a> {
-    msg: &'a Message,
-    lines: &'a [String],
-}
-
-impl<'a> MessageCursor<'a> {
-    fn new(msg: &'a Message, lines: &'a [String]) -> Self {
-        MessageCursor { msg, lines }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Message> {
+        self.messages.iter()
     }
 
-    pub(crate) fn field(&self, field: FieldType) -> Option<&'a str> {
-        self.msg
-            .field_idcs
-            .get(&field)
-            .map(|local_idx| self.lines[self.msg.start_idx + local_idx].as_str())
-    }
-
-    pub(crate) fn all_lines(&self) -> &'a [String] {
-        &self.lines[self.msg.start_idx..self.msg.end_idx]
-    }
-
-    pub(crate) fn body_lines(&self) -> Option<&'a [String]> {
-        self.msg
-            .field_idcs
-            .get(&FieldType::Body)
-            .map(|body_idx| &self.lines[(self.msg.start_idx + *body_idx)..self.msg.end_idx])
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Message> {
+        self.messages.iter_mut()
     }
 }
 
