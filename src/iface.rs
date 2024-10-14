@@ -1,6 +1,6 @@
 use crate::{highlight, mbox};
 
-use termion::{input::TermRead, raw::IntoRawMode};
+use termion::{input::TermRead, raw::IntoRawMode, screen::IntoAlternateScreen};
 
 use std::io;
 
@@ -13,8 +13,7 @@ pub(crate) fn run(
     messages: mbox::Mbox,
     highlighter: &mut highlight::Highlighter,
 ) -> io::Result<Option<mbox::Mbox>> {
-    let stdout = io::stdout().into_raw_mode()?;
-    let stdout = termion::screen::AlternateScreen::from(stdout);
+    let stdout = io::stdout().into_raw_mode()?.into_alternate_screen()?;
     let stdin = io::stdin();
 
     let mut terminal = tui::Terminal::new(tui::backend::CrosstermBackend::new(stdout))?;
