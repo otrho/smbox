@@ -12,7 +12,7 @@ const COL_GREEN_IDX: u8 = 71;
 pub(crate) fn run(
     messages: mbox::Mbox,
     highlighter: &mut highlight::Highlighter,
-) -> io::Result<Option<mbox::Mbox>> {
+) -> anyhow::Result<Option<mbox::Mbox>> {
     let stdout = io::stdout().into_raw_mode()?.into_alternate_screen()?;
     let stdin = io::stdin();
 
@@ -109,7 +109,7 @@ impl IfaceState {
         &mut self,
         terminal: &mut IfaceTerminal,
         highlighter: &mut highlight::Highlighter,
-    ) -> io::Result<()> {
+    ) -> anyhow::Result<()> {
         // A little lambda to remove the 'Title:' prefix and to pad/trunc to a fixed width.
         let prepare_field = |line: &str, width: usize| {
             let mut stripped = line.split(": ").nth(1).unwrap_or(line).to_string();

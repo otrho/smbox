@@ -7,7 +7,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.100"
 directories = "6.0.0"
+fxhash = "0.2.1"
 itertools = "0.14.0"
 mktemp = "0.5.1"
 regex = "1.11.0"

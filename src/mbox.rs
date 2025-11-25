@@ -1,23 +1,15 @@
-use std::{collections::HashMap, io, iter::FromIterator};
+use anyhow::Context;
+use fxhash::FxHashMap;
 
 // -------------------------------------------------------------------------------------------------
 
-pub fn get_mbox_path() -> io::Result<String> {
-    std::env::vars_os()
-        .find(|(key, _)| key == "MAIL")
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "Unable to determine mbox path; missing MAIL environment variable.",
-            )
-        })
-        .and_then(|(_, env_value)| {
-            env_value.into_string().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Malformed string in MAIL environment variable.",
-                )
-            })
+pub fn get_mbox_path() -> anyhow::Result<String> {
+    std::env::var_os("MAIL")
+        .context("Unable to determine mbox path; missing MAIL environment variable.")
+        .and_then(|env_value| {
+            env_value
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("Malformed string in MAIL environment variable.",))
         })
 }
 
@@ -52,11 +44,11 @@ impl Status {
 #[derive(Debug)]
 pub(crate) struct Message {
     lines: Vec<String>,
-    field_idcs: HashMap<FieldType, usize>,
+    field_idcs: FxHashMap<FieldType, usize>,
 }
 
 impl Message {
-    fn new(lines: Vec<String>, field_idcs: HashMap<FieldType, usize>) -> Self {
+    fn new(lines: Vec<String>, field_idcs: FxHashMap<FieldType, usize>) -> Self {
         Message { lines, field_idcs }
     }
 
@@ -122,7 +114,7 @@ pub struct Mbox {
     messages: Vec<Message>,
 }
 
-impl FromIterator<String> for Mbox {
+impl std::iter::FromIterator<String> for Mbox {
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
         let field_parser = FieldsParser::default();
 
@@ -193,11 +185,11 @@ impl FieldsParser {
         }
     }
 
-    pub(super) fn gather_fields(&self, lines: &[String]) -> HashMap<FieldType, usize> {
+    pub(super) fn gather_fields(&self, lines: &[String]) -> FxHashMap<FieldType, usize> {
         lines
             .iter()
             .enumerate()
-            .fold(HashMap::new(), |mut fields, (idx, line)| {
+            .fold(FxHashMap::default(), |mut fields, (idx, line)| {
                 if let Some(field) = self
                     .field_prefixes
                     .iter()
