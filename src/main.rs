@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Write},
     iter::FromIterator,
     os::unix::fs::PermissionsExt,
 };
@@ -25,11 +25,15 @@ fn main() -> anyhow::Result<()> {
     if lines.is_empty() {
         println!("No mail.");
     } else {
-        let config = read_config_str().unwrap_or_default();
         let messages = mbox::Mbox::from_iter(lines);
 
-        let mut highlighter = highlight::load_highlighter(&config)
-            .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
+        let config_str = read_config_str()?;
+
+        let mut highlighter = if config_str.is_empty() {
+            highlight::Highlighter::default()
+        } else {
+            ron::from_str(&config_str)?
+        };
 
         if let Some(mut updated_messages) = iface::run(messages, &mut highlighter)? {
             for msg in updated_messages.iter_mut() {
@@ -57,7 +61,7 @@ fn read_config_str() -> anyhow::Result<String> {
         directories::BaseDirs::new().context("Failed to determine config file path.")?;
 
     let mut config_file_path = base_dirs.config_dir().to_owned();
-    config_file_path.push("smbox.toml");
+    config_file_path.push("smbox.ron");
 
     Ok(fs::read_to_string(config_file_path)?)
 }
