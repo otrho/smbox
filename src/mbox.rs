@@ -150,11 +150,11 @@ impl Mbox {
     }
 
     pub(crate) fn msg_at(&self, idx: usize) -> Option<&Message> {
-        (idx < self.messages.len()).then_some(&self.messages[idx])
+        self.messages.get(idx)
     }
 
     pub(crate) fn msg_at_mut(&mut self, idx: usize) -> Option<&mut Message> {
-        (idx < self.messages.len()).then_some(&mut self.messages[idx])
+        self.messages.get_mut(idx)
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Message> {

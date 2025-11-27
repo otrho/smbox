@@ -36,7 +36,7 @@ It has the following format:
         (   // First highlighter.
             enter: <regex>,
             exit: Some(<regex>),
-            matchers:[
+            matches: [
                 (match: <regex 1>, colour: <clr 1>),
                 (match: <regex 2>, colour: <clr 2>),
                 .
@@ -46,7 +46,7 @@ It has the following format:
         ),
         (   // Second highlighter...
             enter: <regex>,
-            matchers:[
+            matches: [
                 (match: <regex 1>, colour: <clr 1>),
                 (match: <regex 2>, colour: <clr 2>),
                 .
@@ -62,7 +62,7 @@ etc.
 * `regex` is a string which will work with the `[regex](https://github.com/rust-lang/regex)` crate.
 * The `enter` regular expression value turns that context on.
 * The `exit` regular expression turns it off again, and is optional (but must be `Some(..)` when present).
-* The `matchers` are pairs of regular expressions and 256 colour indices which will be matched
+* The `matches` are pairs of regular expressions and 256 colour indices which will be matched
   against lines of text while that context is 'alive'.
 * The regular expressions may contain captures (between parentheses) in which case the first
   capture will be highlighted rather than the entire match, as is the default.
@@ -74,7 +74,7 @@ E.g.,
         (   // Login failures.  Enter this context when we see 'login failures:'.  Exit on a blank line.
             enter: " login failures:$",
             exit: Some("^$"),
-            matchers:[
+            matches: [
                 // Highlight reported unknown users in colour 140.
                 (match: "unknown user (.*) ", colour: 140),
                 // Highlight the words 'invalid protocol' when found, with colour 87.
@@ -83,7 +83,7 @@ E.g.,
         ),
         (   // Let's encrypt.
             enter: "^Processing.*letsencrypt",
-            matchers: [
+            matches: [
                 (match: "^Certificate not yet due for renewal$",     colour: 107),
                 (match: "^Renewing an existing certificate for .*$", colour: 222),
                 (match: "^Congratulations, all renewals succeeded:", colour: 107),

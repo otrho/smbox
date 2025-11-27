@@ -26,16 +26,9 @@ fn main() -> anyhow::Result<()> {
         println!("No mail.");
     } else {
         let messages = mbox::Mbox::from_iter(lines);
+        let highlighter = build_highlighter_from_config()?;
 
-        let config_str = read_config_str()?;
-
-        let mut highlighter = if config_str.is_empty() {
-            highlight::Highlighter::default()
-        } else {
-            ron::from_str(&config_str)?
-        };
-
-        if let Some(mut updated_messages) = iface::run(messages, &mut highlighter)? {
+        if let Some(mut updated_messages) = iface::run(messages, highlighter)? {
             for msg in updated_messages.iter_mut() {
                 msg.set_status(mbox::Status::NonRecent);
             }
@@ -56,14 +49,23 @@ fn main() -> anyhow::Result<()> {
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn read_config_str() -> anyhow::Result<String> {
+fn build_highlighter_from_config() -> anyhow::Result<highlight::HighlightConfig> {
     let base_dirs =
         directories::BaseDirs::new().context("Failed to determine config file path.")?;
 
     let mut config_file_path = base_dirs.config_dir().to_owned();
     config_file_path.push("smbox.ron");
 
-    Ok(fs::read_to_string(config_file_path)?)
+    Ok(if fs::exists(&config_file_path)? {
+        ron::from_str(&fs::read_to_string(&config_file_path).with_context(|| {
+            format!(
+                "Failed to read from config file at {}.",
+                config_file_path.display()
+            )
+        })?)?
+    } else {
+        highlight::HighlightConfig::default()
+    })
 }
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
