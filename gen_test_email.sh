@@ -10,7 +10,7 @@ check_bin() {
 check_bin curl "'curl'"
 check_bin mail "a BSD-like 'mail'"
 
-curl -s https://loripsum.net/api/plaintext | \
+curl -s 'https://lorem-api.com/api/lorem?paragraphs=3' \
   fold -s | \
   /usr/bin/mail -s "test mail $(date '+%d/%m %H:%M:%S')" ${USER}
 
