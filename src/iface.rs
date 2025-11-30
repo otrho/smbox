@@ -39,6 +39,8 @@ enum ExitType {
     Update,
 }
 
+const SCROLL_LINES_COUNT: usize = 24;
+
 impl IfaceState {
     fn new(mbox: mbox::Mbox, highlighter: HighlightConfig) -> IfaceState {
         IfaceState {
@@ -78,21 +80,19 @@ impl IfaceState {
                 }
 
                 KeyCode::Char('j') => {
-                    self.selector.select_next();
+                    self.select_next();
                     self.set_selected_status(mbox::Status::Read);
-                    self.scroll_count = 0;
                 }
                 KeyCode::Char('k') => {
-                    self.selector.select_previous();
+                    self.select_prev();
                     self.set_selected_status(mbox::Status::Read);
-                    self.scroll_count = 0;
                 }
 
                 KeyCode::Char(' ') => {
-                    self.scroll_count = self.scroll_count.saturating_add(24);
+                    self.scroll_count = self.scroll_count.saturating_add(SCROLL_LINES_COUNT);
                 }
                 KeyCode::Char('b') => {
-                    self.scroll_count = self.scroll_count.saturating_sub(24);
+                    self.scroll_count = self.scroll_count.saturating_sub(SCROLL_LINES_COUNT);
                 }
                 KeyCode::Char('g') => {
                     self.scroll_count = 0;
@@ -104,7 +104,7 @@ impl IfaceState {
 
                 KeyCode::Char('d') => {
                     self.set_selected_status(mbox::Status::Deleted);
-                    self.selector.select_next();
+                    self.select_next();
                     self.set_selected_status(mbox::Status::Read);
                 }
 
@@ -115,6 +115,16 @@ impl IfaceState {
         }
 
         Ok(())
+    }
+
+    fn select_next(&mut self) {
+        self.selector.select_next();
+        self.scroll_count = 0;
+    }
+
+    fn select_prev(&mut self) {
+        self.selector.select_previous();
+        self.scroll_count = 0;
     }
 
     fn set_selected_status(&mut self, status: mbox::Status) {
@@ -194,7 +204,7 @@ impl IfaceState {
         // XXX: There's a lot of copying going on here.  Ideally we'd be returning `&str` from the
         // mbox and highlighter and using the mbox lifetime everywhere.
         let mut highlighter = self.highlight_config.highlighter();
-        let mut highlight_lines = |lines: &[String]| {
+        let highlight_lines = |lines: &[String]| {
             lines
                 .iter()
                 .map(|line| {
@@ -211,7 +221,10 @@ impl IfaceState {
                         }
 
                         for Highlight { begin, end, colour } in &highlights {
-                            spans.push(Span::styled(line[*begin..*end].to_string(), Color::Indexed(*colour)));
+                            spans.push(Span::styled(
+                                line[*begin..*end].to_string(),
+                                Color::Indexed(*colour),
+                            ));
                         }
 
                         let last_highlight_end = highlights.last().unwrap().end;
@@ -230,7 +243,7 @@ impl IfaceState {
             .mbox
             .msg_at(selected_idx.unwrap_or(0))
             .and_then(|msg| msg.body_lines())
-            .map(|lines| highlight_lines(lines))
+            .map(highlight_lines)
             .unwrap_or_default();
 
         self.scrollbar = self
