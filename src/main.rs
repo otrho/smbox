@@ -17,6 +17,7 @@ fn main() -> anyhow::Result<()> {
     let mbox_path = mbox::get_mbox_path()?;
     let mbox_file = fs::File::open(&mbox_path)
         .with_context(|| format!("Failed to open mbox file '{mbox_path}'."))?;
+    let mbox_mtime = mbox_file.metadata()?.modified()?;
 
     let lines = BufReader::new(mbox_file)
         .lines()
@@ -35,7 +36,7 @@ fn main() -> anyhow::Result<()> {
 
             println!(
                 "{}",
-                match write_mbox(&updated_messages)? {
+                match write_mbox(&updated_messages, mbox_mtime)? {
                     n if n == updated_messages.count() as i64 => "Deleted all messages.".to_owned(),
                     1 => "Deleted 1 message.".to_owned(),
                     n => format!("Deleted {n} messages."),
@@ -70,7 +71,10 @@ fn build_highlighter_from_config() -> anyhow::Result<highlight::HighlightConfig>
 
 // -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -
 
-fn write_mbox(mbox: &mbox::Mbox) -> anyhow::Result<i64> {
+fn write_mbox(
+    mbox: &mbox::Mbox,
+    mbox_original_mtime: std::time::SystemTime,
+) -> anyhow::Result<i64> {
     // Create a replacement mbox file with remaining messages.
     let mut num_deleted_messages = 0;
     {
@@ -95,7 +99,12 @@ fn write_mbox(mbox: &mbox::Mbox) -> anyhow::Result<i64> {
             }
         }
 
-        fs::copy(temp_mbox_file_path, mbox::get_mbox_path()?)?;
+        let mbox_path = mbox::get_mbox_path()?;
+        if fs::metadata(&mbox_path)?.modified()? != mbox_original_mtime {
+            anyhow::bail!("Mailbox '{mbox_path}' has been updated in the background!");
+        } else {
+            fs::copy(temp_mbox_file_path, mbox_path)?;
+        }
     }
 
     Ok(num_deleted_messages)
