@@ -8,8 +8,8 @@ use ratatui::{
     prelude::*,
     symbols::scrollbar,
     widgets::{
-        Block, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Widget, Wrap,
+        Block, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Widget, Wrap,
     },
     DefaultTerminal,
 };
@@ -19,6 +19,7 @@ pub(crate) fn run(
     highlighter: HighlightConfig,
 ) -> anyhow::Result<Option<mbox::Mbox>> {
     let mut terminal = ratatui::init();
+    // XXX: use https://docs.rs/ratatui/latest/ratatui/struct.Terminal.html#method.clear here
     let result = IfaceState::new(messages, highlighter).run(&mut terminal);
     ratatui::restore();
     result
@@ -28,7 +29,7 @@ struct IfaceState {
     mbox: mbox::Mbox,
     highlight_config: HighlightConfig,
     finished: Option<ExitType>,
-    selector: ListState,
+    selector: TableState,
     scrollbar: ScrollbarState,
     scroll_count: usize,
     wrap: bool,
@@ -136,15 +137,12 @@ impl IfaceState {
     }
 
     fn render_selector_list(&mut self, area: Rect, buf: &mut Buffer) {
-        // A little util to remove the 'Title:' prefix and to pad/trunc to a fixed width.
-        let prepare_field = |line: &str, width: usize| {
-            let mut stripped = line.split(": ").nth(1).unwrap_or(line).to_string();
-            stripped.truncate(width);
-            format!("{:1$}", stripped, width)
-        };
+        // A little util to remove the 'Title:' prefix.
+        let prepare_field = |line: &str| line.split(": ").nth(1).unwrap_or(line).to_string();
 
-        // Gather info from the message headers for the selection list items.
-        let items = self
+        let mut max_from_width = 0;
+
+        let rows = self
             .mbox
             .iter()
             .map(|msg| {
@@ -162,8 +160,8 @@ impl IfaceState {
                     "N"
                 };
 
-                // Make the date 25 chars, the from field 40 and the subject can be longer.
-                // XXX: This could probably be done with `Text` manips and could then have styling.
+                let status = format!("{del_status}{read_status}");
+
                 let date = prepare_field(
                     msg.field(mbox::FieldType::Date)
                         .map(|line| {
@@ -173,23 +171,30 @@ impl IfaceState {
                             line.split(" +").next().unwrap_or(line)
                         })
                         .unwrap_or("???"),
-                    25,
                 );
-                let from = prepare_field(msg.field(mbox::FieldType::From).unwrap_or("???"), 40);
-                let subject =
-                    prepare_field(msg.field(mbox::FieldType::Subject).unwrap_or("???"), 80);
 
-                ListItem::new(format!(
-                    "{del_status}{read_status} {date} | {from} | {subject}"
-                ))
+                let from = prepare_field(msg.field(mbox::FieldType::From).unwrap_or("???"));
+                max_from_width = max_from_width.max(from.len());
+
+                let subject = prepare_field(msg.field(mbox::FieldType::Subject).unwrap_or("???"));
+
+                Row::new(vec![status, date, from, subject])
             })
             .collect::<Vec<_>>();
 
-        let list = List::new(items)
-            .block(Block::new())
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::DarkGray));
+        let widths = [
+            Constraint::Length(2),                     // Status is always 2.
+            Constraint::Length(25),                    // Date is always 25.
+            Constraint::Length(max_from_width as u16), // Shrink to fit From.
+            Constraint::Fill(1),                       // Subject gets the rest.
+        ];
 
-        StatefulWidget::render(list, area, buf, &mut self.selector);
+        let table = Table::new(rows, widths)
+            .column_spacing(2)
+            .block(Block::new())
+            .row_highlight_style(Style::default().fg(Color::Black).bg(Color::DarkGray));
+
+        StatefulWidget::render(table, area, buf, &mut self.selector);
     }
 
     fn render_body_text(&mut self, area: Rect, buf: &mut Buffer) {
